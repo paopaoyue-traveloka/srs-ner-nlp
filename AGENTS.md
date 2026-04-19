@@ -484,31 +484,30 @@ epoch 循环、早停、WandB 上报、test 评估均由基类 `NERTrainer.train
 
 ### 单任务 NER 模型（`hanlp.pretrained.ner`）
 
-单任务模型精度通常优于多任务模型，适合只需 NER 的场景。
+单任务模型适合只需 NER 的场景。**以下为 HanLP 2.1.3 实际可用模型**（通过 `dir(hanlp.pretrained.ner)` 验证）：
 
-| 模型常量 | 编码器 | 语言 | 语料 | 实体类型数 | 说明 |
-|----------|--------|------|------|-----------|------|
-| `MSRA_NER_ELECTRA_SMALL_ZH` | ELECTRA-small | 中文 | MSRA | 26 | F1=95.16，速度快，**项目默认使用** |
-| `MSRA_NER_BERT_BASE_ZH` | BERT-base | 中文 | MSRA | 3 | 经典BERT，3类实体（人名/地名/机构名） |
-| `MSRA_NER_ALBERT_BASE_ZH` | ALBERT-base | 中文 | MSRA | 3 | 轻量版BERT，参数少速度快 |
-| `CONLL03_NER_BERT_BASE_CASED_EN` | BERT-base-cased | 英文 | CoNLL-2003 | 4 | 英文NER，4类：PER/LOC/ORG/MISC |
+| 模型常量 | 编码器 | 语言 | 语料 | 说明 |
+|----------|--------|------|------|------|
+| `MSRA_NER_ELECTRA_SMALL_ZH` | ELECTRA-small | 中文 | MSRA | F1=95.16，速度快，**项目默认使用** |
+| `MSRA_NER_BERT_BASE_ZH` | BERT-base | 中文 | MSRA | 经典BERT，精度略高于ELECTRA-small |
+| `MSRA_NER_ALBERT_BASE_ZH` | ALBERT-base | 中文 | MSRA | 轻量版BERT，参数少速度快 |
+
+> **注意**：`CONLL03_NER_BERT_BASE_CASED_EN` 虽在 `hanlp.pretrained.ner` 中注册，但与 HanLP 2.1.3 不兼容（加载时报 `KeyError: 'average_subwords'`），**不可使用**。英文/多语种 NER 请使用多任务模型（mtl）。
 
 ---
 
 ### 本项目选型说明
 
-`HanLPTrainConfig` 默认使用 `MSRA_NER_ELECTRA_SMALL_ZH`，原因：
+`HanLPTrainConfig` 默认使用 `MSRA_NER_ELECTRA_SMALL_ZH`，当前 `scripts/hanlp_train_queryner.sh` 也沿用此模型。
 
-- 中文单任务 NER，与 QueryNER 的英文查询场景需要微调覆盖
-- ELECTRA-small 速度快，适合训练迭代；26类实体标注集覆盖面广
-- 若需更高精度可换 `MSRA_NER_BERT_BASE_ZH`（base版）
-- QueryNER 为英文电商查询，实际微调时模型底层编码器需能处理英文子词；ELECTRA-small 基于中文预训练，**建议评估是否改用多语种模型**（如 `UD_ONTONOTES_...XLMR_BASE`）或英文模型（`CONLL03_NER_BERT_BASE_CASED_EN`）作为微调起点
+- ELECTRA-small 速度快，适合训练迭代
+- QueryNER 为**英文**电商查询，ELECTRA-small 基于中文预训练；若需英文友好底座，应改用多任务模型（mtl）后端，当前 HanLP 单任务 NER 无可用英文模型
 
-| 场景 | 推荐模型 |
-|------|---------|
-| 中文 NER，高精度 | `CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_BASE_ZH`（mtl）或 `MSRA_NER_BERT_BASE_ZH`（stl） |
-| 中文 NER，快速推理 | `MSRA_NER_ELECTRA_SMALL_ZH` |
-| 英文 NER | `CONLL03_NER_BERT_BASE_CASED_EN` 或 `EN_TOK_LEM_POS_NER_SRL_UDEP_SDP_CON_MODERNBERT_BASE` |
-| 多语种 NER | `UD_ONTONOTES_...XLMR_BASE`（精度最高）或 `...MMINILMV2L6`（最轻量） |
-| 古汉语 | `KYOTO_EVAHAN_TOK_LEM_POS_UDEP_LZH` |
-| 日文 | `NPCMJ_UD_KYOTO_TOK_POS_CON_BERT_BASE_CHAR_JA` |
+| 场景 | 推荐模型 | 类型 |
+|------|---------|------|
+| 中文 NER，快速 | `MSRA_NER_ELECTRA_SMALL_ZH` | stl |
+| 中文 NER，高精度 | `MSRA_NER_BERT_BASE_ZH` | stl |
+| 英文 NER | `EN_TOK_LEM_POS_NER_SRL_UDEP_SDP_CON_MODERNBERT_BASE` | mtl（需改后端） |
+| 多语种 NER | `UD_ONTONOTES_TOK_POS_LEM_FEA_NER_SRL_DEP_SDP_CON_XLMR_BASE` | mtl（需改后端） |
+| 古汉语 | `KYOTO_EVAHAN_TOK_LEM_POS_UDEP_LZH` | mtl |
+| 日文 | `NPCMJ_UD_KYOTO_TOK_POS_CON_BERT_BASE_CHAR_JA` | mtl |
