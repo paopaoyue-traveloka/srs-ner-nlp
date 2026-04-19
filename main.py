@@ -137,9 +137,14 @@ def _build_train_config(args: argparse.Namespace):
 
     kwargs: dict = {"dataset_name": args.dataset}
     for f in (
-        "epochs", "batch_size", "lr", "warmup_steps", "grad_norm",
-        "pretrained_model", "train_split", "dev_split", "test_split",
+        # 通用
+        "epochs", "train_split", "dev_split", "test_split",
         "data_dir", "save_dir", "best_metric", "early_stopping_patience",
+        # HanLP MTL 专属
+        "transformer", "average_subwords", "word_dropout", "max_sequence_length",
+        "batch_size", "lr", "encoder_lr", "grad_norm",
+        "gradient_accumulation", "warmup_steps",
+        "tagging_scheme", "crf", "eval_trn",
     ):
         val = getattr(args, f, None)
         if val is not None:
@@ -265,15 +270,25 @@ def build_parser() -> argparse.ArgumentParser:
     show_p.set_defaults(func=cmd_show)
 
     # train
-    train_p = sub.add_parser("train", help="微调 HanLP NER 模型")
+    train_p = sub.add_parser("train", help="微调 HanLP NER 模型（MTL 流程）")
     train_p.add_argument("dataset", help="数据集名称，如 queryner")
+    # Transformer 编码器
+    train_p.add_argument("--transformer", type=str, default=None,
+                         help="HuggingFace transformer 名称（默认 bert-base-cased）")
+    train_p.add_argument("--average_subwords", action="store_true", default=None)
+    train_p.add_argument("--word_dropout", type=float, default=None)
+    train_p.add_argument("--max_sequence_length", type=int, default=None)
     # 训练超参
     train_p.add_argument("--epochs", type=int, default=None)
     train_p.add_argument("--batch_size", type=int, default=None)
-    train_p.add_argument("--lr", type=float, default=None)
-    train_p.add_argument("--warmup_steps", type=int, default=None)
+    train_p.add_argument("--lr", type=float, default=None, help="任务头学习率")
+    train_p.add_argument("--encoder_lr", type=float, default=None, help="Transformer 编码器学习率")
+    train_p.add_argument("--warmup_steps", type=float, default=None)
     train_p.add_argument("--grad_norm", type=float, default=None)
-    train_p.add_argument("--pretrained_model", type=str, default=None)
+    train_p.add_argument("--gradient_accumulation", type=int, default=None)
+    train_p.add_argument("--tagging_scheme", type=str, default=None)
+    train_p.add_argument("--crf", action="store_true", default=None)
+    train_p.add_argument("--eval_trn", action="store_true", default=None)
     train_p.add_argument("--train_split", type=str, default=None)
     train_p.add_argument("--dev_split", type=str, default=None)
     train_p.add_argument("--test_split", type=str, default=None)

@@ -190,7 +190,7 @@ uv run main.py train queryner
 uv run main.py train queryner --epochs 30 --lr 2e-5 --best_metric f1 --early_stopping_patience 5
 
 # 上传 WandB（复制 .env.example 为 .env 并填入 WANDB_API_KEY）
-uv run main.py train queryner --wandb_project ner-finetune --wandb_run exp1
+uv run main.py train queryner --wandb_project ner-finetune --wandb_run hanlp_train_queryner
 
 # 独立评估已训练模型
 uv run main.py validate queryner --split test
@@ -324,25 +324,38 @@ exported = ds.export_tsv(".data", splits=["train", "validation"])  # 导出 TSV
 | `best_metric` | `"f1"` | 选优指标（f1 / precision / recall / case_accuracy） |
 | `early_stopping_patience` | `5` | 早停耐心值，≤0 表示禁用 |
 
-**`HanLPTrainConfig`** — HanLP 专属配置（`ner_trainer/hanlp/config.py`），在 BaseTrainConfig 基础上新增：
+**`HanLPTrainConfig`** — HanLP MTL 专属配置（`ner_trainer/hanlp/config.py`），在 BaseTrainConfig 基础上新增：
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `pretrained_model` | `"MSRA_NER_ELECTRA_SMALL_ZH"` | hanlp.pretrained.ner 下的属性名 |
-| `batch_size` | `None` | None 沿用预训练默认值 |
-| `lr` | `None` | 学习率，微调建议 1e-5 ~ 5e-5 |
-| `warmup_steps` | `None` | AdamW warmup 步数 |
-| `grad_norm` | `None` | 梯度裁剪 max norm |
+| `transformer` | `"bert-base-cased"` | HuggingFace transformer 名称，作为 ContextualWordEmbedding 底座 |
+| `average_subwords` | `True` | 是否对子词做平均池化（英文 WordPiece 场景建议开启） |
+| `word_dropout` | `0.1` | Embedding dropout 概率 |
+| `max_sequence_length` | `512` | Transformer 最大输入序列长度 |
+| `batch_size` | `32` | 每个 batch 的样本数 |
+| `lr` | `1e-3` | 任务头（decoder）学习率 |
+| `encoder_lr` | `5e-5` | Transformer 编码器学习率（通常远小于任务头） |
+| `grad_norm` | `5.0` | 梯度裁剪 max norm |
+| `gradient_accumulation` | `1` | 梯度累积步数 |
+| `warmup_steps` | `0.1` | Warmup 比例（<1.0）或绝对步数（≥1） |
+| `tagging_scheme` | `None` | BIO 标注方案，None 自动推断 |
+| `crf` | `False` | 是否使用 CRF 解码层 |
+| `eval_trn` | `False` | 每 epoch 是否同时在训练集上评估 |
 
-**`HanLPTrainer`** — HanLP 后端实现（`ner_trainer/hanlp/trainer.py`）：
+**`HanLPTrainer`** — HanLP MTL 后端实现（`ner_trainer/hanlp/trainer.py`）：
+
+训练流程基于 `MultiTaskLearning` + `TaggingNamedEntityRecognition` + `ContextualWordEmbedding`，
+参考官方 demo：[open_base.py](https://github.com/hankcs/HanLP/blob/master/plugins/hanlp_demo/hanlp_demo/zh/train/open_base.py)
 
 ```python
 from ner_trainer.hanlp import HanLPTrainer, HanLPTrainConfig
 
 config = HanLPTrainConfig(
     dataset_name="queryner",
+    transformer="bert-base-cased",
     epochs=30,
-    lr=2e-5,
+    lr=1e-3,
+    encoder_lr=5e-5,
     best_metric="f1",
     early_stopping_patience=5,
 )
@@ -498,7 +511,7 @@ epoch 循环、早停、WandB 上报、test 评估均由基类 `NERTrainer.train
 
 ### 本项目选型说明
 
-`HanLPTrainConfig` 默认使用 `MSRA_NER_ELECTRA_SMALL_ZH`，当前 `scripts/hanlp_train_queryner.sh` 也沿用此模型。
+`HanLPTrainConfig` 默认使用 `bert-base-cased` 作为 transformer 底座，当前 `scripts/hanlp_train_queryner.sh` 也沿用此模型。
 
 - ELECTRA-small 速度快，适合训练迭代
 - QueryNER 为**英文**电商查询，ELECTRA-small 基于中文预训练；若需英文友好底座，应改用多任务模型（mtl）后端，当前 HanLP 单任务 NER 无可用英文模型

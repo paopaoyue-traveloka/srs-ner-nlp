@@ -1,15 +1,16 @@
 """
 ner_trainer/hanlp/config.py
 
-HanLPTrainConfig — HanLP 后端专属训练配置。
+HanLPTrainConfig — HanLP MTL 后端专属训练配置。
 
-继承 BaseTrainConfig，添加 HanLP/Transformer 特有字段：
-  pretrained_model、batch_size、lr、warmup_steps、grad_norm。
+继承 BaseTrainConfig，添加 HanLP MultiTaskLearning 特有字段。
+训练流程参考：
+  https://github.com/hankcs/HanLP/blob/master/plugins/hanlp_demo/hanlp_demo/zh/train/open_base.py
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ner_trainer.config import BaseTrainConfig
@@ -18,40 +19,70 @@ from ner_trainer.config import BaseTrainConfig
 @dataclass
 class HanLPTrainConfig(BaseTrainConfig):
     """
-    HanLP TransformerNamedEntityRecognizer 专属训练配置。
+    HanLP MultiTaskLearning + TaggingNamedEntityRecognition 训练配置。
 
     通用字段继承自 BaseTrainConfig（dataset_name / epochs / best_metric 等）。
-    HanLP 特有字段在此声明，由 HanLPTrainer 读取并注入 ner.config。
+    HanLP MTL 特有字段在此声明，由 HanLPTrainer 读取后传入 mtl.fit()。
     """
 
-    pretrained_model: str = "MSRA_NER_ELECTRA_SMALL_ZH"
+    # ── Transformer 编码器 ────────────────────────────────────────────
+    transformer: str = "bert-base-cased"
     """
-    HanLP 预训练 NER 模型名称（hanlp.pretrained.ner 下的属性名）。
-    例如：MSRA_NER_ELECTRA_SMALL_ZH / MSRA_NER_BERT_BASE_ZH
+    HuggingFace transformer 模型名称，作为 ContextualWordEmbedding 的底座。
+    例如：
+      "bert-base-cased"                     （英文，默认）
+      "hfl/chinese-electra-180g-small-discriminator"  （中文 ELECTRA-small）
+      "answerdotai/ModernBERT-base"          （英文 ModernBERT）
+      "xlm-roberta-base"                    （多语种 XLM-R）
     """
 
-    batch_size: int | None = None
-    """批大小。None 表示沿用预训练默认值（通常 32）。"""
+    average_subwords: bool = True
+    """是否对子词做平均池化（英文 WordPiece 场景建议 True）。"""
 
-    lr: float | None = None
-    """学习率。None 表示沿用预训练默认值。微调建议 1e-5 ~ 5e-5。"""
+    word_dropout: float = 0.1
+    """Embedding dropout 概率。"""
 
-    warmup_steps: int | None = None
-    """AdamW warmup 步数。None 表示沿用预训练默认值。"""
+    max_sequence_length: int = 512
+    """Transformer 最大输入序列长度。"""
 
-    grad_norm: float | None = None
-    """梯度裁剪 max norm。None 表示沿用预训练默认值（通常 5.0）。"""
+    # ── 任务超参 ─────────────────────────────────────────────────────
+    batch_size: int = 32
+    """每个 batch 的样本数。"""
 
-    def to_hanlp_overrides(self) -> dict[str, Any]:
-        """
-        生成可注入 ner.config 的覆盖字典。
-        epochs 固定为 1（由 NERTrainer 基类的 epoch 循环控制）。
-        其余只写入非 None 字段及 extra 内容。
-        """
-        overrides: dict[str, Any] = {"epochs": 1}
-        for key in ("batch_size", "lr", "warmup_steps", "grad_norm"):
-            val = getattr(self, key)
-            if val is not None:
-                overrides[key] = val
-        overrides.update(self.extra)
-        return overrides
+    lr: float = 1e-3
+    """任务头（decoder）学习率。"""
+
+    encoder_lr: float = 5e-5
+    """Transformer 编码器学习率（通常远小于任务头）。"""
+
+    grad_norm: float = 5.0
+    """梯度裁剪 max norm。"""
+
+    gradient_accumulation: int = 1
+    """梯度累积步数，等效于将 batch_size 乘以此倍数。"""
+
+    warmup_steps: float = 0.1
+    """
+    Warmup 步数或比例。
+    float < 1.0 表示占总步数的比例（如 0.1 = 前 10% 步做 warmup）；
+    int >= 1 表示绝对步数。
+    """
+
+    tagging_scheme: str | None = None
+    """
+    BIO 标注方案。None 由 HanLP 自动推断。
+    可选：'BIO' / 'BIOES' / 'BMES'。
+    """
+
+    crf: bool = False
+    """是否使用 CRF 解码层（增加序列约束，通常提升精度但速度慢）。"""
+
+    eval_trn: bool = False
+    """每 epoch 是否同时在训练集上评估（通常关闭以节省时间）。"""
+
+    # ── 扩展 ──────────────────────────────────────────────────────────
+    task_extra: dict[str, Any] = field(default_factory=dict)
+    """
+    传给 TaggingNamedEntityRecognition 的额外参数。
+    通用训练循环不读取此字段，由 HanLPTrainer 透传给任务构造器。
+    """
