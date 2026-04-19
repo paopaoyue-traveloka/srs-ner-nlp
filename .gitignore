@@ -17,8 +17,8 @@ eggs/
 lib/
 lib64/
 parts/
-sdist/
-var/
+BBsdist/
+vaBr/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Dataset
+.data
