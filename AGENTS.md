@@ -173,7 +173,7 @@ used          B-condition        # 商品状态
 
 ```bash
 # 安装依赖
-uv add datasets
+uv add datasets hanlp wandb
 
 # 列出所有已注册数据集
 uv run main.py list
@@ -184,6 +184,17 @@ uv run main.py stats queryner
 # 查看样本和实体提取（默认 train split，5 条）
 uv run main.py show queryner
 uv run main.py show queryner --split test --n 3
+
+# 微调训练（含 epoch 循环、dev 验证、早停、test 评估）
+uv run main.py train queryner
+uv run main.py train queryner --epochs 30 --lr 2e-5 --best_metric f1 --early_stopping_patience 5
+
+# 上传 WandB（复制 .env.example 为 .env 并填入 WANDB_API_KEY）
+uv run main.py train queryner --wandb_project ner-finetune --wandb_run exp1
+
+# 独立评估已训练模型
+uv run main.py validate queryner --split test
+uv run main.py validate queryner --split test --model_dir .model/queryner/best
 ```
 
 ---
@@ -192,15 +203,42 @@ uv run main.py show queryner --split test --n 3
 
 ```
 srs-ner-nlp/
-├── main.py              # CLI 入口（list / stats / show 三个子命令）
-└── ner_datasets/        # NER 数据集封装模块
-    ├── __init__.py      # 公共导出
-    ├── base.py          # NERDataset 抽象基类、NERExample、DatasetStats
-    ├── queryner.py      # QueryNER 具体实现
-    └── registry.py      # DatasetRegistry 全局注册表
+├── main.py                  # CLI 入口（list / stats / show / train / validate）
+├── .env.example             # WandB API key 模板（复制为 .env 并填入真实 key）
+│
+├── ner_datasets/            # NER 数据集封装模块
+│   ├── __init__.py          # 公共导出
+│   ├── base.py              # NERDataset 抽象基类、NERExample、DatasetStats
+│   ├── queryner.py          # QueryNER 具体实现
+│   └── registry.py          # DatasetRegistry 全局注册表
+│
+├── metrics/                 # 评估指标 & WandB 日志
+│   ├── __init__.py          # 导出 NERMetrics, WandbConfig, WandbLogger
+│   ├── base.py              # NERMetrics 数据类
+│   └── wandb.py             # WandbLogger / WandbConfig
+│
+└── ner_trainer/             # NER 训练框架
+    ├── __init__.py          # 导出所有公共接口
+    ├── config.py            # BaseTrainConfig（框架无关通用配置）
+    ├── base.py              # NERTrainer 抽象基类（通用训练骨架）
+    └── hanlp/               # HanLP 后端实现
+        ├── __init__.py
+        ├── config.py        # HanLPTrainConfig(BaseTrainConfig)
+        └── trainer.py       # HanLPTrainer(NERTrainer)
 ```
 
-### 核心抽象
+临时生成目录（已在 `.gitignore`，不提交 git）：
+
+```
+.data/    # 训练数据 TSV 导出（由 NERDataset.export_tsv() 生成）
+.model/   # 模型 checkpoint（按 <dataset_name>/epoch_NNN/ 和 best/ 组织）
+```
+
+---
+
+## 核心抽象
+
+### ner_datasets
 
 **`NERExample`** — 单条样本，提供 `.entities()` 方法从 BIO 标签中提取实体 span：
 
@@ -216,6 +254,7 @@ print(ex.entities()) # [('cascade', 'creator'), ('platinum', 'product_name'), ('
 ```
 
 **`NERDataset`** — 抽象基类，子类需实现 `load()` / `splits()` / `label_names()` / `iter_split()` 等接口。
+新增 `export_tsv()` 方法，将任意 split 导出为 HanLP 兼容的两列 BIO TSV。
 
 **`DatasetRegistry`** — 全局注册表，按名称管理所有数据集：
 
@@ -227,9 +266,107 @@ ds = registry.get("queryner")
 ds.load()
 stats = ds.stats()        # 返回 DatasetStats（规模、标签分布等）
 examples = ds.sample(split="test", n=5)
+exported = ds.export_tsv(".data", splits=["train", "validation"])  # 导出 TSV
 ```
 
-### 新增数据集
+### metrics
+
+**`NERMetrics`** — 统一评估结果数据类（`metrics/base.py`）：
+
+| 字段 | 含义 |
+|------|------|
+| `precision` | 实体精确率 = TP / (TP + FP) |
+| `recall` | 实体召回率 = TP / (TP + FN) |
+| `f1` | 实体 F1，主排名指标 |
+| `nb_correct / nb_pred / nb_true` | TP / (TP+FP) / (TP+FN) 原始计数 |
+| `fp / fn` | 派生属性 |
+| `case_accuracy` | 查询级别完全正确率（整条查询所有标签全对才算） |
+| `nb_cases_correct / nb_cases_total` | case accuracy 分子/分母 |
+| `loss` | 平均 cross-entropy loss（None 表示不可用） |
+| `epoch` | 对应训练 epoch，独立 validate 时为 None |
+
+所有指标均为 entity-level exact match（span 类型+边界全匹配），micro-average 聚合。
+
+**`WandbLogger`** — WandB 日志记录器（`metrics/wandb.py`），密钥管理三层优先级：
+1. 环境变量 `WANDB_API_KEY`（CI/CD）
+2. 项目根目录 `.env` 文件（本地开发，不提交 git）
+3. `wandb login` 写入的 `~/.netrc`
+
+### ner_trainer
+
+**`NERTrainer`** — 抽象基类（`ner_trainer/base.py`），封装通用训练骨架：
+- epoch 循环
+- 每 epoch 在 dev 集评估
+- best checkpoint 管理（按指定指标选优，`copytree` 到 `best/`）
+- 早停（`early_stopping_patience` 轮无改善则停止）
+- 训练结束后加载 best checkpoint 在 test 集评估
+
+子类只需实现四个钩子方法：
+
+| 方法 | 职责 |
+|------|------|
+| `load_model()` | 初始化底层模型，赋值 `self.model` |
+| `train_one_epoch(trn, dev, ckpt_dir, epoch)` | 跑一轮训练，保存 checkpoint |
+| `evaluate(data_path, split, epoch)` | 评估，返回 `NERMetrics` |
+| `load_from_checkpoint(ckpt_dir)` | 从目录恢复模型权重 |
+
+**`BaseTrainConfig`** — 通用配置基类（`ner_trainer/config.py`）：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `dataset_name` | `"queryner"` | 数据集名称 |
+| `train_split` | `"train"` | 训练 split |
+| `dev_split` | `"validation"` | 验证 split |
+| `test_split` | `"test"` | 最终评估 split |
+| `data_dir` | `".data"` | TSV 导出目录 |
+| `save_dir` | `".model"` | 模型保存目录 |
+| `epochs` | `30` | 总训练轮数 |
+| `best_metric` | `"f1"` | 选优指标（f1 / precision / recall / case_accuracy） |
+| `early_stopping_patience` | `5` | 早停耐心值，≤0 表示禁用 |
+
+**`HanLPTrainConfig`** — HanLP 专属配置（`ner_trainer/hanlp/config.py`），在 BaseTrainConfig 基础上新增：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `pretrained_model` | `"MSRA_NER_ELECTRA_SMALL_ZH"` | hanlp.pretrained.ner 下的属性名 |
+| `batch_size` | `None` | None 沿用预训练默认值 |
+| `lr` | `None` | 学习率，微调建议 1e-5 ~ 5e-5 |
+| `warmup_steps` | `None` | AdamW warmup 步数 |
+| `grad_norm` | `None` | 梯度裁剪 max norm |
+
+**`HanLPTrainer`** — HanLP 后端实现（`ner_trainer/hanlp/trainer.py`）：
+
+```python
+from ner_trainer.hanlp import HanLPTrainer, HanLPTrainConfig
+
+config = HanLPTrainConfig(
+    dataset_name="queryner",
+    epochs=30,
+    lr=2e-5,
+    best_metric="f1",
+    early_stopping_patience=5,
+)
+trainer = HanLPTrainer(config)
+best_dir, dev_history, test_metrics = trainer.train()
+print(test_metrics)
+
+# 独立评估
+metrics = trainer.validate(split="test")
+```
+
+Checkpoint 目录布局：
+
+```
+.model/queryner/
+├── epoch_001/    ← 每 epoch 快照（HanLP fit 保存）
+├── epoch_002/
+├── ...
+└── best/         ← 最优 checkpoint（validate 默认从此加载）
+```
+
+---
+
+## 新增数据集
 
 1. 在 `ner_datasets/` 下新建 `yourdata.py`，继承 `NERDataset` 并实现所有抽象方法：
 
@@ -257,3 +394,29 @@ registry.register(YourDataset)
 ```
 
 注册后 `uv run main.py list` 即可看到新数据集，所有子命令自动支持。
+
+---
+
+## 新增训练后端
+
+1. 在 `ner_trainer/<backend>/` 下新建 `config.py` 和 `trainer.py`：
+
+```python
+# config.py
+from ner_trainer.config import BaseTrainConfig
+
+@dataclass
+class YourConfig(BaseTrainConfig):
+    your_field: str = "default"
+
+# trainer.py
+from ner_trainer.base import NERTrainer
+
+class YourTrainer(NERTrainer):
+    def load_model(self): ...
+    def train_one_epoch(self, trn, dev, ckpt_dir, epoch): ...
+    def evaluate(self, data_path, split, epoch=None) -> NERMetrics: ...
+    def load_from_checkpoint(self, ckpt_dir): ...
+```
+
+epoch 循环、早停、WandB 上报、test 评估均由基类 `NERTrainer.train()` 自动处理。

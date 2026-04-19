@@ -7,6 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator
 
 
@@ -141,3 +142,43 @@ class NERDataset(ABC):
                 break
             result.append(ex)
         return result
+
+    def export_tsv(
+        self,
+        output_dir: str | Path = ".data",
+        splits: list[str] | None = None,
+    ) -> dict[str, Path]:
+        """
+        将指定 split 导出为 HanLP 兼容的两列 BIO TSV 文件。
+
+        格式：每行 `token\\tlabel`，空行分隔句子。
+        文件命名：<output_dir>/<dataset_name>_<split>.tsv
+
+        Args:
+            output_dir: 输出目录，默认 .data/（已在 .gitignore 中）
+            splits:     要导出的 split 列表，默认导出全部 split
+
+        Returns:
+            dict[split_name -> 文件路径]
+        """
+        self._require_loaded()
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        target_splits = splits if splits is not None else self.splits()
+        exported: dict[str, Path] = {}
+
+        for split in target_splits:
+            if split not in self.splits():
+                raise ValueError(
+                    f"split '{split}' 不存在，可用: {', '.join(self.splits())}"
+                )
+            path = out / f"{self.name}_{split}.tsv"
+            with path.open("w", encoding="utf-8") as f:
+                for ex in self.iter_split(split):
+                    for token, label in zip(ex.tokens, ex.labels):
+                        f.write(f"{token}\t{label}\n")
+                    f.write("\n")  # 空行分隔句子
+            exported[split] = path
+
+        return exported
