@@ -31,6 +31,7 @@ ner_trainer — NER 训练框架。
 from ner_trainer.config import BaseTrainConfig, BestMetric
 from ner_trainer.base import NERTrainer
 from ner_trainer.hanlp import HanLPTrainConfig, HanLPTrainer
+from ner_trainer.gliner2 import GLiNER2TrainConfig, GLiNER2Trainer
 
 # 便捷别名：保持旧调用 ner_trainer.TrainConfig 兼容
 TrainConfig = HanLPTrainConfig
@@ -43,6 +44,9 @@ __all__ = [
     # HanLP 后端
     "HanLPTrainConfig",
     "HanLPTrainer",
+    # GLiNER2 后端
+    "GLiNER2TrainConfig",
+    "GLiNER2Trainer",
     # 兼容别名
     "TrainConfig",
 ]

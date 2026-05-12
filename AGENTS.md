@@ -173,7 +173,7 @@ used          B-condition        # 商品状态
 
 ```bash
 # 安装依赖
-uv add datasets hanlp wandb
+uv add datasets hanlp gliner2 wandb
 
 # 列出所有已注册数据集
 uv run main.py list
@@ -185,16 +185,22 @@ uv run main.py stats queryner
 uv run main.py show queryner
 uv run main.py show queryner --split test --n 3
 
-# 微调训练（含 epoch 循环、dev 验证、早停、test 评估）
-uv run main.py train queryner
-uv run main.py train queryner --epochs 30 --lr 2e-5 --best_metric f1 --early_stopping_patience 5
+# 微调训练（HanLP 后端）
+uv run main.py train queryner --backend hanlp
+uv run main.py train queryner --backend hanlp --epochs 30 --lr 2e-5 --best_metric f1 --early_stopping_patience 3
+
+# 微调训练（GLiNER2 后端，支持 pretrained model）
+uv run main.py train queryner --backend gliner2 --pretrained_model fastino/gliner2-base-v1
+uv run main.py train queryner --backend gliner2 --pretrained_model fastino/gliner2-large-v1 --epochs 20 --batch_size 8 --early_stopping_patience 3
 
 # 上传 WandB（复制 .env.example 为 .env 并填入 WANDB_API_KEY）
-uv run main.py train queryner --wandb_project ner-finetune --wandb_run hanlp_train_queryner
+uv run main.py train queryner --backend hanlp --wandb_project ner-finetune --wandb_run hanlp_train_queryner
+uv run main.py train queryner --backend gliner2 --wandb_project ner-finetune --wandb_run gliner2_train_queryner
 
 # 独立评估已训练模型
-uv run main.py validate queryner --split test
-uv run main.py validate queryner --split test --model_dir .model/queryner/best
+uv run main.py validate queryner --backend hanlp --split test
+uv run main.py validate queryner --backend hanlp --split test --model_dir .model/queryner/best
+uv run main.py validate queryner --backend gliner2 --split test --model_dir .model/queryner/gliner2/best
 ```
 
 ---
@@ -221,10 +227,14 @@ srs-ner-nlp/
     ├── __init__.py          # 导出所有公共接口
     ├── config.py            # BaseTrainConfig（框架无关通用配置）
     ├── base.py              # NERTrainer 抽象基类（通用训练骨架）
-    └── hanlp/               # HanLP 后端实现
+    ├── hanlp/               # HanLP 后端实现
+    │   ├── __init__.py
+    │   ├── config.py        # HanLPTrainConfig(BaseTrainConfig)
+    │   └── trainer.py       # HanLPTrainer(NERTrainer)
+    └── gliner2/             # GLiNER2 后端实现
         ├── __init__.py
-        ├── config.py        # HanLPTrainConfig(BaseTrainConfig)
-        └── trainer.py       # HanLPTrainer(NERTrainer)
+        ├── config.py        # GLiNER2TrainConfig(BaseTrainConfig)
+        └── trainer.py       # GLiNER2Trainer(NERTrainer)
 ```
 
 临时生成目录（已在 `.gitignore`，不提交 git）：

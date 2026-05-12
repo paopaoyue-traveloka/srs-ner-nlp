@@ -132,25 +132,59 @@ def cmd_show(args: argparse.Namespace) -> None:
 # ── 训练 & 评估命令 ───────────────────────────────────────────────────
 
 def _build_train_config(args: argparse.Namespace):
-    """从 argparse Namespace 构建 HanLPTrainConfig。"""
-    from ner_trainer.hanlp import HanLPTrainConfig
+    """从 argparse Namespace 构建后端对应的 TrainConfig。"""
+    backend = getattr(args, "backend", "hanlp")
 
-    kwargs: dict = {"dataset_name": args.dataset}
-    for f in (
-        # 通用
-        "epochs", "train_split", "dev_split", "test_split",
-        "data_dir", "save_dir", "best_metric", "early_stopping_patience",
-        # HanLP MTL 专属
-        "transformer", "average_subwords", "word_dropout", "max_sequence_length",
-        "batch_size", "lr", "encoder_lr", "grad_norm",
-        "gradient_accumulation", "warmup_steps",
-        "tagging_scheme", "crf", "eval_trn",
-    ):
-        val = getattr(args, f, None)
-        if val is not None:
-            kwargs[f] = val
+    if backend == "hanlp":
+        from ner_trainer.hanlp import HanLPTrainConfig
 
-    return HanLPTrainConfig(**kwargs)
+        kwargs: dict = {"dataset_name": args.dataset}
+        for f in (
+            # 通用
+            "epochs", "train_split", "dev_split", "test_split",
+            "data_dir", "save_dir", "best_metric", "early_stopping_patience",
+            # HanLP MTL 专属
+            "transformer", "average_subwords", "word_dropout", "max_sequence_length",
+            "batch_size", "lr", "encoder_lr", "grad_norm",
+            "gradient_accumulation", "warmup_steps",
+            "tagging_scheme", "crf", "eval_trn",
+        ):
+            val = getattr(args, f, None)
+            if val is not None:
+                kwargs[f] = val
+        return HanLPTrainConfig(**kwargs)
+
+    if backend == "gliner2":
+        from ner_trainer.gliner2 import GLiNER2TrainConfig
+
+        kwargs = {"dataset_name": args.dataset}
+        for f in (
+            # 通用
+            "epochs", "train_split", "dev_split", "test_split",
+            "data_dir", "save_dir", "best_metric", "early_stopping_patience",
+            # GLiNER2 专属
+            "pretrained_model", "batch_size", "eval_batch_size", "encoder_lr", "task_lr",
+            "warmup_ratio", "scheduler_type", "threshold", "fp16",
+            "use_lora", "lora_r", "lora_alpha", "lora_dropout", "save_adapter_only",
+        ):
+            val = getattr(args, f, None)
+            if val is not None:
+                kwargs[f] = val
+        return GLiNER2TrainConfig(**kwargs)
+
+    raise ValueError(f"不支持的 backend: {backend}")
+
+
+def _resolve_trainer_cls(backend: str):
+    if backend == "hanlp":
+        from ner_trainer.hanlp import HanLPTrainer
+
+        return HanLPTrainer
+    if backend == "gliner2":
+        from ner_trainer.gliner2 import GLiNER2Trainer
+
+        return GLiNER2Trainer
+    raise ValueError(f"不支持的 backend: {backend}")
 
 
 def _build_wandb_logger(args: argparse.Namespace, run_name_default: str | None = None):
@@ -178,11 +212,11 @@ def _build_wandb_logger(args: argparse.Namespace, run_name_default: str | None =
 
 
 def cmd_train(args: argparse.Namespace) -> None:
-    """微调 HanLP NER 模型（含 epoch 循环、dev 验证、早停、test 评估）。"""
-    from ner_trainer.hanlp import HanLPTrainer
+    """微调 NER 模型（支持 HanLP / GLiNER2 后端）。"""
 
     config = _build_train_config(args)
     wb = _build_wandb_logger(args, run_name_default=f"{args.dataset}-train")
+    trainer_cls = _resolve_trainer_cls(getattr(args, "backend", "hanlp"))
 
     try:
         ds = registry.get(config.dataset_name)
@@ -194,7 +228,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     ds.load()
 
     wb.init(config)
-    trainer = HanLPTrainer(config)
+    trainer = trainer_cls(config)
 
     try:
         best_dir, dev_history, test_metrics = trainer.train(dataset=ds, wb=wb)
@@ -213,11 +247,11 @@ def cmd_train(args: argparse.Namespace) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
-    """在指定 split 上评估已训练模型。"""
-    from ner_trainer.hanlp import HanLPTrainer
+    """在指定 split 上评估已训练模型（支持 HanLP / GLiNER2）。"""
 
     config = _build_train_config(args)
     wb = _build_wandb_logger(args, run_name_default=f"{args.dataset}-validate")
+    trainer_cls = _resolve_trainer_cls(getattr(args, "backend", "hanlp"))
 
     try:
         ds = registry.get(config.dataset_name)
@@ -229,7 +263,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     ds.load()
 
     wb.init(config)
-    trainer = HanLPTrainer(config)
+    trainer = trainer_cls(config)
 
     try:
         metrics = trainer.validate(
@@ -270,8 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
     show_p.set_defaults(func=cmd_show)
 
     # train
-    train_p = sub.add_parser("train", help="微调 HanLP NER 模型（MTL 流程）")
+    train_p = sub.add_parser("train", help="微调 NER 模型（HanLP / GLiNER2）")
     train_p.add_argument("dataset", help="数据集名称，如 queryner")
+    train_p.add_argument("--backend", choices=["hanlp", "gliner2"], default="hanlp")
     # Transformer 编码器
     train_p.add_argument("--transformer", type=str, default=None,
                          help="HuggingFace transformer 名称（默认 bert-base-cased）")
@@ -289,6 +324,20 @@ def build_parser() -> argparse.ArgumentParser:
     train_p.add_argument("--tagging_scheme", type=str, default=None)
     train_p.add_argument("--crf", action="store_true", default=None)
     train_p.add_argument("--eval_trn", action="store_true", default=None)
+    # GLiNER2 训练参数
+    train_p.add_argument("--pretrained_model", type=str, default=None,
+                         help="GLiNER2 预训练模型名或本地路径（如 fastino/gliner2-base-v1）")
+    train_p.add_argument("--task_lr", type=float, default=None)
+    train_p.add_argument("--warmup_ratio", type=float, default=None)
+    train_p.add_argument("--scheduler_type", type=str, default=None)
+    train_p.add_argument("--eval_batch_size", type=int, default=None)
+    train_p.add_argument("--threshold", type=float, default=None)
+    train_p.add_argument("--fp16", action="store_true", default=None)
+    train_p.add_argument("--use_lora", action="store_true", default=None)
+    train_p.add_argument("--lora_r", type=int, default=None)
+    train_p.add_argument("--lora_alpha", type=float, default=None)
+    train_p.add_argument("--lora_dropout", type=float, default=None)
+    train_p.add_argument("--save_adapter_only", action="store_true", default=None)
     train_p.add_argument("--train_split", type=str, default=None)
     train_p.add_argument("--dev_split", type=str, default=None)
     train_p.add_argument("--test_split", type=str, default=None)
@@ -317,10 +366,14 @@ def build_parser() -> argparse.ArgumentParser:
     # validate
     val_p = sub.add_parser("validate", help="在指定 split 上评估已训练模型")
     val_p.add_argument("dataset", help="数据集名称，如 queryner")
+    val_p.add_argument("--backend", choices=["hanlp", "gliner2"], default="hanlp")
     val_p.add_argument("--split", type=str, default="test")
     val_p.add_argument("--model_dir", type=str, default=None, help="模型路径（默认 .model/<dataset>/best）")
     val_p.add_argument("--data_dir", type=str, default=None)
     val_p.add_argument("--save_dir", type=str, default=None)
+    val_p.add_argument("--pretrained_model", type=str, default=None,
+                       help="GLiNER2 初始模型（当 model_dir 未指定时使用）")
+    val_p.add_argument("--threshold", type=float, default=None)
     val_p.add_argument("--wandb_project", type=str, default=None)
     val_p.add_argument("--wandb_entity", type=str, default=None)
     val_p.add_argument("--wandb_run", type=str, default=None)
