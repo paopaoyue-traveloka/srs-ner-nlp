@@ -255,13 +255,13 @@ class GLiNER2Trainer(NERTrainer):
 
         examples = list(self.dataset.iter_split(split))
 
-        entity_types = sorted(
+        entity_types = list({sorted(
             {
                 label[2:]
                 for label in self.dataset.label_names()
                 if label != "O" and "-" in label
             }
-        )
+        )})
 
         tp = 0
         fp = 0
