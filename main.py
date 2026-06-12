@@ -1,18 +1,20 @@
 """
-CLI 入口 — NER 数据集探索 & HanLP 微调工具
+CLI 入口 — NER 数据集探索 & 微调工具
 
 用法:
     uv run main.py list
     uv run main.py stats queryner
     uv run main.py show  queryner [--split test] [--n 5]
 
-    uv run main.py train queryner
-    uv run main.py train queryner --epochs 30 --batch_size 16 --lr 2e-5
-    uv run main.py train queryner --best_metric f1 --early_stopping_patience 5
-    uv run main.py train queryner --wandb_project ner-finetune --wandb_run exp1
+    uv run main.py train queryner --backend hanlp
+    uv run main.py train queryner --backend gliner2
+    uv run main.py train queryner --backend trl --base_model openbmb/MiniCPM5-1B
 
-    uv run main.py validate queryner --split test
-    uv run main.py validate queryner --split test --model_dir .model/queryner/best
+    uv run main.py validate queryner --backend trl --split test
+    uv run main.py validate queryner --split test --model_dir .model/queryner/trl/best
+
+    uv run main.py upload-model .model/queryner/trl/best
+    uv run main.py upload-model .model/queryner/trl/best --artifact_name my-ner-model
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import logging
 import os
 import sys
 from collections import Counter
+from pathlib import Path
 
 from ner_datasets import registry
 from ner_datasets.base import DatasetStats, NERDataset, NERExample
@@ -172,6 +175,29 @@ def _build_train_config(args: argparse.Namespace):
                 kwargs[f] = val
         return GLiNER2TrainConfig(**kwargs)
 
+    if backend == "trl":
+        from ner_trainer.trl import TRLTrainConfig
+
+        kwargs = {"dataset_name": args.dataset}
+        for f in (
+            # 通用
+            "epochs", "train_split", "dev_split", "test_split",
+            "data_dir", "save_dir", "best_metric", "early_stopping_patience",
+            # TRL 专属
+            "base_model", "lora_r", "lora_alpha", "lora_dropout",
+            "batch_size", "lr", "warmup_ratio",
+            "max_length", "max_new_tokens", "temperature", "system_prompt",
+            "use_unsloth", "load_in_4bit",
+        ):
+            val = getattr(args, f, None)
+            if val is not None:
+                kwargs[f] = val
+        # accumulative_counts → gradient_accumulation_steps
+        val = getattr(args, "accumulative_counts", None)
+        if val is not None:
+            kwargs["gradient_accumulation_steps"] = val
+        return TRLTrainConfig(**kwargs)
+
     raise ValueError(f"不支持的 backend: {backend}")
 
 
@@ -184,6 +210,10 @@ def _resolve_trainer_cls(backend: str):
         from ner_trainer.gliner2 import GLiNER2Trainer
 
         return GLiNER2Trainer
+    if backend == "trl":
+        from ner_trainer.trl import TRLTrainer
+
+        return TRLTrainer
     raise ValueError(f"不支持的 backend: {backend}")
 
 
@@ -212,7 +242,7 @@ def _build_wandb_logger(args: argparse.Namespace, run_name_default: str | None =
 
 
 def cmd_train(args: argparse.Namespace) -> None:
-    """微调 NER 模型（支持 HanLP / GLiNER2 后端）。"""
+    """微调 NER 模型（支持 HanLP / GLiNER2 / TRL 后端）。"""
 
     config = _build_train_config(args)
     wb = _build_wandb_logger(args, run_name_default=f"{args.dataset}-train")
@@ -240,14 +270,12 @@ def cmd_train(args: argparse.Namespace) -> None:
 
         if test_metrics:
             print(f"\n{test_metrics}")
-
-        wb.log_model(best_dir)
     finally:
         wb.finish()
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
-    """在指定 split 上评估已训练模型（支持 HanLP / GLiNER2）。"""
+    """在指定 split 上评估已训练模型（支持 HanLP / GLiNER2 / TRL）。"""
 
     config = _build_train_config(args)
     wb = _build_wandb_logger(args, run_name_default=f"{args.dataset}-validate")
@@ -273,6 +301,53 @@ def cmd_validate(args: argparse.Namespace) -> None:
         )
         print(f"\n{metrics}")
         wb.log_metrics(metrics)
+    finally:
+        wb.finish()
+
+
+def cmd_upload_model(args: argparse.Namespace) -> None:
+    """将本地模型目录上传到 WandB Artifacts。"""
+    from metrics import WandbConfig, WandbLogger
+    from metrics.wandb import _load_dotenv
+
+    _load_dotenv()
+
+    model_dir = Path(args.model_dir)
+    if not model_dir.exists():
+        print(f"错误: 模型目录不存在: {model_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    wconfig = WandbConfig(
+        project=(
+            getattr(args, "wandb_project", None)
+            or os.environ.get("WANDB_PROJECT")
+            or "ner-finetune"
+        ),
+        entity=(
+            getattr(args, "wandb_entity", None)
+            or os.environ.get("WANDB_ENTITY")
+            or None
+        ),
+        run_name=getattr(args, "wandb_run", None) or f"upload-{model_dir.name}",
+        enabled=True,
+        log_model_artifact=True,
+    )
+    wb = WandbLogger(wconfig)
+
+    # 用空 config 初始化 run（仅用于上传 artifact）
+    from dataclasses import dataclass
+
+    @dataclass
+    class _MinimalConfig:
+        model_dir: str = str(model_dir)
+        artifact_name: str = getattr(args, "artifact_name", None) or model_dir.name
+
+    wb.init(_MinimalConfig())
+
+    try:
+        artifact_name = getattr(args, "artifact_name", None) or None
+        wb.log_model(model_dir, artifact_name=artifact_name)
+        print(f"模型已上传: {model_dir} → WandB artifact")
     finally:
         wb.finish()
 
@@ -304,9 +379,9 @@ def build_parser() -> argparse.ArgumentParser:
     show_p.set_defaults(func=cmd_show)
 
     # train
-    train_p = sub.add_parser("train", help="微调 NER 模型（HanLP / GLiNER2）")
+    train_p = sub.add_parser("train", help="微调 NER 模型（HanLP / GLiNER2 / TRL）")
     train_p.add_argument("dataset", help="数据集名称，如 queryner")
-    train_p.add_argument("--backend", choices=["hanlp", "gliner2"], default="hanlp")
+    train_p.add_argument("--backend", choices=["hanlp", "gliner2", "trl"], default="hanlp")
     # Transformer 编码器
     train_p.add_argument("--transformer", type=str, default=None,
                          help="HuggingFace transformer 名称（默认 bert-base-cased）")
@@ -338,6 +413,24 @@ def build_parser() -> argparse.ArgumentParser:
     train_p.add_argument("--lora_alpha", type=float, default=None)
     train_p.add_argument("--lora_dropout", type=float, default=None)
     train_p.add_argument("--save_adapter_only", action="store_true", default=None)
+    # TRL 训练参数
+    train_p.add_argument("--base_model", type=str, default=None,
+                         help="TRL base model（如 openbmb/MiniCPM5-1B）")
+    train_p.add_argument("--accumulative_counts", type=int, default=None,
+                         help="TRL 梯度累积步数")
+    train_p.add_argument("--max_length", type=int, default=None,
+                         help="TRL tokenizer 最大序列长度")
+    train_p.add_argument("--max_new_tokens", type=int, default=None,
+                         help="TRL 推理时最大生成 token 数")
+    train_p.add_argument("--temperature", type=float, default=None,
+                         help="TRL 推理温度（0=greedy）")
+    train_p.add_argument("--system_prompt", type=str, default=None,
+                         help="TRL 自定义 system prompt（留空用内置）")
+    # TRL + unsloth 选项
+    train_p.add_argument("--use_unsloth", action="store_true", default=None,
+                         help="使用 unsloth 加速（FastLanguageModel），需 pip install unsloth")
+    train_p.add_argument("--load_in_4bit", action="store_true", default=None,
+                         help="QLoRA 4-bit 量化加载（仅 --use_unsloth 时有效）")
     train_p.add_argument("--train_split", type=str, default=None)
     train_p.add_argument("--dev_split", type=str, default=None)
     train_p.add_argument("--test_split", type=str, default=None)
@@ -366,19 +459,35 @@ def build_parser() -> argparse.ArgumentParser:
     # validate
     val_p = sub.add_parser("validate", help="在指定 split 上评估已训练模型")
     val_p.add_argument("dataset", help="数据集名称，如 queryner")
-    val_p.add_argument("--backend", choices=["hanlp", "gliner2"], default="hanlp")
+    val_p.add_argument("--backend", choices=["hanlp", "gliner2", "trl"], default="hanlp")
     val_p.add_argument("--split", type=str, default="test")
     val_p.add_argument("--model_dir", type=str, default=None, help="模型路径（默认 .model/<dataset>/best）")
     val_p.add_argument("--data_dir", type=str, default=None)
     val_p.add_argument("--save_dir", type=str, default=None)
     val_p.add_argument("--pretrained_model", type=str, default=None,
                        help="GLiNER2 初始模型（当 model_dir 未指定时使用）")
+    val_p.add_argument("--base_model", type=str, default=None,
+                       help="TRL base model（当 model_dir 未指定时使用）")
+    val_p.add_argument("--use_unsloth", action="store_true", default=None,
+                       help="使用 unsloth 推理（FastLanguageModel）")
+    val_p.add_argument("--load_in_4bit", action="store_true", default=None,
+                       help="QLoRA 4-bit 量化加载（仅 --use_unsloth 时有效）")
     val_p.add_argument("--threshold", type=float, default=None)
     val_p.add_argument("--wandb_project", type=str, default=None)
     val_p.add_argument("--wandb_entity", type=str, default=None)
     val_p.add_argument("--wandb_run", type=str, default=None)
     val_p.add_argument("--no_wandb", action="store_true")
     val_p.set_defaults(func=cmd_validate)
+
+    # upload-model
+    up_p = sub.add_parser("upload-model", help="将模型目录上传到 WandB Artifacts")
+    up_p.add_argument("model_dir", help="模型目录路径（如 .model/queryner/trl/best）")
+    up_p.add_argument("--artifact_name", type=str, default=None,
+                       help="WandB Artifact 名称（默认使用目录名）")
+    up_p.add_argument("--wandb_project", type=str, default=None)
+    up_p.add_argument("--wandb_entity", type=str, default=None)
+    up_p.add_argument("--wandb_run", type=str, default=None)
+    up_p.set_defaults(func=cmd_upload_model)
 
     return parser
 

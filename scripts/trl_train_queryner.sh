@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# TRL + MiniCPM5 LoRA 微调 QueryNER
+#
+# 依赖通过 uv dependency group 管理，无需手动安装：
+#   uv sync --group trl
+#
+# 使用：
+#   bash scripts/trl_train_queryner.sh
+#
+# 环境变量（可选）：
+#   CUDA_VISIBLE_DEVICES=0     指定 GPU
+#   BASE_MODEL=openbmb/MiniCPM5-1B  模型名或本地路径
+
+set -euo pipefail
+
+uv run --group trl main.py train queryner \
+    --backend trl \
+    --base_model "${BASE_MODEL:-openbmb/MiniCPM5-1B}" \
+    --epochs 2 \
+    --batch_size 4 \
+    --accumulative_counts 4 \
+    --lr 2e-4 \
+    --warmup_ratio 0.03 \
+    --lora_r 16 \
+    --lora_alpha 32 \
+    --lora_dropout 0.05 \
+    --max_length 2048 \
+    --best_metric f1 \
+    --early_stopping_patience 3 \
+    --wandb_run trl_minicpm5_train_queryner

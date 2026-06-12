@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-uv run main.py train queryner \
+uv run --group hanlp main.py train queryner \
     --transformer bert-base-cased \
     --epochs 30 \
     --batch_size 32 \

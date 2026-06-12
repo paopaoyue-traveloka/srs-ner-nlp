@@ -5,9 +5,42 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "datasets>=4.8.4",
-    "gliner2>=1.3.1",
-    "hanlp>=2.1.3",
-    "transformers>=4.12,<4.47",
     "wandb>=0.26.0",
+]
+
+# ── 后端依赖组（互斥，按需安装）─────────────────────────────────
+# 用法：
+#   uv run --group hanlp main.py ...          # HanLP + GLiNER2 后端
+#   uv run --group trl main.py ...            # TRL 后端
+#   uv run --group unsloth main.py ...        # TRL + unsloth 后端
+[dependency-groups]
+hanlp = [
+    "datasets>=4.8.4",
+    "hanlp>=2.1.3",
+    "gliner2>=1.3.1",
+    "transformers>=4.12,<4.47",
+]
+trl = [
+    "datasets>=4.8.4",
+    "trl>=0.21",
+    "peft>=0.13",
+    "transformers>=5.6,<6",
+    "accelerate",
+]
+unsloth = [
+    "datasets>=3.4.1,<4.4",
+    "unsloth>=2026.5",
+    "transformers==4.57.3",
+]
+
+[tool.uv]
+# hanlp / trl / unsloth 三个组的 transformers 版本互斥，
+# 声明为冲突使 uv 在不同 fork 中分别解析。
+default-groups = []
+conflicts = [
+    [
+        { group = "hanlp" },
+        { group = "trl" },
+        { group = "unsloth" },
+    ],
 ]
