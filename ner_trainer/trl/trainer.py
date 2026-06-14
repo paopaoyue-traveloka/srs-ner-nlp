@@ -27,6 +27,7 @@ TRLTrainer — NERTrainer 的 TRL + LoRA 后端实现。
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from pathlib import Path
@@ -166,6 +167,7 @@ class TRLTrainer(NERTrainer):
         fp = 0
         fn = 0
         correct_cases = 0
+        per_case_rows: list[dict[str, object]] = []
 
         # unsloth 推理加速
         if self._is_unsloth_loaded:
@@ -181,12 +183,29 @@ class TRLTrainer(NERTrainer):
                 pred_spans = bio_to_entity_spans(pred_labels)
                 gold_spans = bio_to_entity_spans(gold_labels)
 
-                tp += len(pred_spans & gold_spans)
+                tp_case = len(pred_spans & gold_spans)
+                pred_entity_count = len(pred_spans)
+                gold_entity_count = len(gold_spans)
+
+                tp += tp_case
                 fp += len(pred_spans - gold_spans)
                 fn += len(gold_spans - pred_spans)
 
-                if pred_labels == gold_labels:
+                is_case_correct = pred_labels == gold_labels
+                if is_case_correct:
                     correct_cases += 1
+
+                per_case_rows.append(
+                    {
+                        "input_case": ex.query,
+                        "expected_output": ",".join(gold_labels),
+                        "actual_output": ",".join(pred_labels),
+                        "is_case_correct": int(is_case_correct),
+                        "tp_entity_count": tp_case,
+                        "expected_entity_count": gold_entity_count,
+                        "actual_entity_count": pred_entity_count,
+                    }
+                )
 
         nb_pred = tp + fp
         nb_true = tp + fn
@@ -195,6 +214,10 @@ class TRLTrainer(NERTrainer):
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
         case_total = len(examples)
         case_acc = correct_cases / case_total if case_total else 0.0
+
+        csv_path = self._resolve_eval_csv_path(split)
+        self._write_eval_csv(csv_path, per_case_rows)
+        logger.info("评估明细已写入 CSV: %s", csv_path)
 
         return NERMetrics(
             precision=precision,
@@ -217,16 +240,24 @@ class TRLTrainer(NERTrainer):
         """
         从 HF adapter 目录加载 LoRA 权重到 base model。
 
-        ckpt_dir 应包含 adapter_config.json + adapter_model.safetensors。
+        LoRA 模式：ckpt_dir 应包含 adapter_config.json + adapter_model.safetensors。
+        全量模式：ckpt_dir 应为可被 from_pretrained() 加载的模型目录。
         """
         cfg = self.config
         adapter_dir = ckpt_dir
 
-        if not (adapter_dir / "adapter_config.json").exists():
+        if not cfg.full_finetune and not (adapter_dir / "adapter_config.json").exists():
             raise FileNotFoundError(
                 f"adapter 目录不存在或不完整: '{adapter_dir}'\n"
-                "请确认已完成训练并保存了 adapter。"
+                "请确认已完成 LoRA 训练并保存了 adapter。"
             )
+
+        if cfg.full_finetune:
+            if cfg.use_unsloth:
+                self._load_full_checkpoint_unsloth(adapter_dir)
+            else:
+                self._load_full_checkpoint_standard(adapter_dir)
+            return
 
         if cfg.use_unsloth:
             self._load_checkpoint_unsloth(adapter_dir)
@@ -277,6 +308,46 @@ class TRLTrainer(NERTrainer):
         self.model = self._model
         self._is_unsloth_loaded = True
 
+    def _load_full_checkpoint_standard(self, ckpt_dir: Path) -> None:
+        """全量模式：从 checkpoint 目录直接加载完整模型。"""
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        logger.info("加载全量模型 checkpoint: %s", ckpt_dir)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            str(ckpt_dir), trust_remote_code=True,
+        )
+        self._model = AutoModelForCausalLM.from_pretrained(
+            str(ckpt_dir),
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        self._model.eval()
+        self.model = self._model
+        self._is_unsloth_loaded = False
+
+    def _load_full_checkpoint_unsloth(self, ckpt_dir: Path) -> None:
+        """unsloth 全量模式：从 checkpoint 目录直接加载完整模型。"""
+        import torch
+        from unsloth import FastLanguageModel
+
+        cfg = self.config
+        logger.info(
+            "加载全量模型 checkpoint (unsloth, 4bit=%s): %s",
+            cfg.load_in_4bit,
+            ckpt_dir,
+        )
+        self._model, self._tokenizer = FastLanguageModel.from_pretrained(
+            model_name=str(ckpt_dir),
+            max_seq_length=cfg.max_length,
+            dtype=torch.bfloat16,
+            load_in_4bit=cfg.load_in_4bit,
+        )
+        self._model.eval()
+        self.model = self._model
+        self._is_unsloth_loaded = True
+
     # ── 覆盖 train()（TRL SFTTrainer 自行管理训练循环）──────────────
 
     def train(
@@ -297,10 +368,149 @@ class TRLTrainer(NERTrainer):
         """
         cfg = self.config
 
+        if cfg.trl_mode == "grpo":
+            return self._train_grpo(dataset, wb)
+
         if cfg.use_unsloth:
             return self._train_unsloth(dataset, wb)
         else:
             return self._train_standard(dataset, wb)
+
+    def _train_grpo(
+        self,
+        dataset: NERDataset | None = None,
+        wb: WandbLogger | None = None,
+    ) -> tuple[Path, list[NERMetrics], NERMetrics | None]:
+        """GRPO 训练路径（TRL GRPOTrainer + 自定义 reward）。"""
+        import torch
+        from datasets import Dataset
+        from peft import LoraConfig, get_peft_model
+        from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
+        from trl import GRPOConfig, GRPOTrainer
+
+        cfg = self.config
+        self.dataset = self._ensure_dataset(dataset)
+
+        if cfg.use_unsloth:
+            logger.warning("GRPO 模式暂不支持 unsloth，自动回退标准 HF 路径。")
+
+        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl"
+        best_dir = run_dir / "best"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        system_prompt = cfg.get_system_prompt()
+        train_examples = list(self.dataset.iter_split(cfg.train_split))
+        train_rows = []
+        for ex in train_examples:
+            train_rows.append(
+                {
+                    "query": ex.query,
+                    "gold_labels": ex.labels,
+                    "prompt": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": ex.query},
+                    ],
+                }
+            )
+
+        train_jsonl = run_dir / "train_grpo.jsonl"
+        with train_jsonl.open("w", encoding="utf-8") as f:
+            for row in train_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        ds = Dataset.from_list(train_rows)
+        logger.info("GRPO 训练数据已准备: %d 条 → %s", len(ds), train_jsonl)
+
+        set_seed(42)
+        tok = AutoTokenizer.from_pretrained(
+            cfg.base_model, use_fast=True, trust_remote_code=True,
+        )
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+
+        model = AutoModelForCausalLM.from_pretrained(
+            cfg.base_model,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+        )
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+
+        if cfg.full_finetune:
+            logger.info("GRPO 使用全量训练模式（不应用 LoRA）")
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            pct = 100.0 * trainable_params / total_params if total_params else 0.0
+            logger.info(
+                "trainable params: %,d / %,d (%.2f%%)",
+                trainable_params,
+                total_params,
+                pct,
+            )
+        else:
+            logger.info("GRPO 使用 LoRA 训练模式")
+            lora = LoraConfig(
+                r=cfg.lora_r,
+                lora_alpha=cfg.lora_alpha,
+                lora_dropout=cfg.lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+                target_modules=cfg.lora_target_modules,
+            )
+            model = get_peft_model(model, lora)
+            model.print_trainable_parameters()
+
+        logger.info(
+            "开始 TRL GRPO 训练（model=%s, epochs=%d, batch=%d×%d, lr=%s, generations=%d）",
+            cfg.base_model,
+            cfg.epochs,
+            cfg.batch_size,
+            cfg.gradient_accumulation_steps,
+            cfg.lr,
+            cfg.grpo_num_generations,
+        )
+
+        grpo_trainer = GRPOTrainer(
+            model=model,
+            processing_class=tok,
+            reward_funcs=self._grpo_reward,
+            args=GRPOConfig(
+                output_dir=str(run_dir),
+                num_train_epochs=cfg.epochs,
+                per_device_train_batch_size=cfg.batch_size,
+                gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+                learning_rate=cfg.lr,
+                warmup_ratio=cfg.warmup_ratio,
+                lr_scheduler_type="cosine",
+                bf16=True,
+                logging_steps=cfg.logging_steps,
+                save_steps=cfg.save_steps,
+                save_total_limit=cfg.save_total_limit,
+                report_to="wandb" if wb is not None else "none",
+                dataloader_num_workers=2,
+                max_prompt_length=cfg.grpo_max_prompt_length,
+                max_completion_length=cfg.grpo_max_completion_length,
+                num_generations=cfg.grpo_num_generations,
+                beta=cfg.grpo_beta,
+                seed=42,
+            ),
+            train_dataset=ds,
+        )
+
+        grpo_trainer.train()
+
+        best_dir.mkdir(parents=True, exist_ok=True)
+        grpo_trainer.model.save_pretrained(str(best_dir))
+        if cfg.full_finetune:
+            tok.save_pretrained(str(best_dir))
+            logger.info("GRPO 全量模型已保存: %s", best_dir)
+        else:
+            logger.info("GRPO LoRA adapter 已保存: %s", best_dir)
+
+        return self._post_train_eval(best_dir, wb)
 
     def _train_standard(
         self,
@@ -356,17 +566,30 @@ class TRLTrainer(NERTrainer):
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
 
-        # ── 4. 应用 LoRA ─────────────────────────────────────────
-        lora = LoraConfig(
-            r=cfg.lora_r,
-            lora_alpha=cfg.lora_alpha,
-            lora_dropout=cfg.lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=cfg.lora_target_modules,
-        )
-        model = get_peft_model(model, lora)
-        model.print_trainable_parameters()
+        # ── 4. LoRA / 全量训练 ───────────────────────────────────
+        if cfg.full_finetune:
+            logger.info("使用全量训练模式（不应用 LoRA）")
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            pct = 100.0 * trainable_params / total_params if total_params else 0.0
+            logger.info(
+                "trainable params: %,d / %,d (%.2f%%)",
+                trainable_params,
+                total_params,
+                pct,
+            )
+        else:
+            logger.info("使用 LoRA 训练模式")
+            lora = LoraConfig(
+                r=cfg.lora_r,
+                lora_alpha=cfg.lora_alpha,
+                lora_dropout=cfg.lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+                target_modules=cfg.lora_target_modules,
+            )
+            model = get_peft_model(model, lora)
+            model.print_trainable_parameters()
 
         # ── 5. 创建 SFTTrainer 并训练 ────────────────────────────
         logger.info(
@@ -403,10 +626,14 @@ class TRLTrainer(NERTrainer):
 
         sft_trainer.train()
 
-        # ── 6. 保存 adapter ──────────────────────────────────────
+        # ── 6. 保存 checkpoint（LoRA adapter / 全量模型）──────────
         best_dir.mkdir(parents=True, exist_ok=True)
         sft_trainer.model.save_pretrained(str(best_dir))
-        logger.info("Adapter 已保存: %s", best_dir)
+        if cfg.full_finetune:
+            tok.save_pretrained(str(best_dir))
+            logger.info("全量模型已保存: %s", best_dir)
+        else:
+            logger.info("LoRA adapter 已保存: %s", best_dir)
 
         # ── 7. 评估 ──────────────────────────────────────────────
         return self._post_train_eval(best_dir, wb)
@@ -459,17 +686,30 @@ class TRLTrainer(NERTrainer):
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
 
-        # ── 4. 应用 LoRA（unsloth 方式）──────────────────────────
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=cfg.lora_r,
-            target_modules=cfg.lora_target_modules,
-            lora_alpha=cfg.lora_alpha,
-            lora_dropout=cfg.lora_dropout,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=42,
-        )
+        # ── 4. LoRA / 全量训练（unsloth 方式）────────────────────
+        if cfg.full_finetune:
+            logger.info("unsloth 使用全量训练模式（不应用 LoRA）")
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            pct = 100.0 * trainable_params / total_params if total_params else 0.0
+            logger.info(
+                "trainable params: %,d / %,d (%.2f%%)",
+                trainable_params,
+                total_params,
+                pct,
+            )
+        else:
+            logger.info("unsloth 使用 LoRA 训练模式")
+            model = FastLanguageModel.get_peft_model(
+                model,
+                r=cfg.lora_r,
+                target_modules=cfg.lora_target_modules,
+                lora_alpha=cfg.lora_alpha,
+                lora_dropout=cfg.lora_dropout,
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+                random_state=42,
+            )
 
         # ── 5. 预格式化训练数据为 text 列 ────────────────────────
         # unsloth 使用 dataset_text_field="text"，
@@ -515,10 +755,14 @@ class TRLTrainer(NERTrainer):
 
         sft_trainer.train()
 
-        # ── 7. 保存 adapter ──────────────────────────────────────
+        # ── 7. 保存 checkpoint（LoRA adapter / 全量模型）──────────
         best_dir.mkdir(parents=True, exist_ok=True)
         sft_trainer.model.save_pretrained(str(best_dir))
-        logger.info("Adapter 已保存: %s", best_dir)
+        if cfg.full_finetune:
+            tok.save_pretrained(str(best_dir))
+            logger.info("全量模型已保存: %s", best_dir)
+        else:
+            logger.info("LoRA adapter 已保存: %s", best_dir)
 
         # ── 8. 评估 ──────────────────────────────────────────────
         return self._post_train_eval(best_dir, wb)
@@ -621,3 +865,117 @@ class TRLTrainer(NERTrainer):
         # 解析缩写标签并还原为完整形式（与 gold labels 对齐）
         raw_tags = parse_bio_output(output_text, len(ex.tokens))
         return [abbrev_to_label(t) for t in raw_tags]
+
+    def _grpo_reward(
+        self,
+        prompts,
+        completions,
+        gold_labels,
+        query,
+        **kwargs,
+    ):
+        """
+        GRPO reward 规则：
+        1) 输出格式错误：-1
+        2) O 标签逐 token match：每个 +0.1
+        3) 非 O 标签逐 token match：
+           - 第 1 个 +0.5
+           - 第 2 个额外 +0.3
+           - 第 3 个及以上每个额外 +0.1
+        """
+        rewards: list[float] = []
+        for completion, labels, q in zip(completions, gold_labels, query):
+            pred_text = self._extract_completion_text(completion)
+            score = self._score_single_grpo_output(pred_text, labels, q)
+            rewards.append(float(score))
+        return rewards
+
+    def _extract_completion_text(self, completion) -> str:
+        """从 GRPO completion 对象中提取文本。"""
+        if isinstance(completion, str):
+            return completion
+        if isinstance(completion, list) and completion:
+            last = completion[-1]
+            if isinstance(last, dict) and "content" in last:
+                return str(last["content"])
+            if isinstance(last, str):
+                return last
+        if isinstance(completion, dict):
+            if "content" in completion:
+                return str(completion["content"])
+            if "text" in completion:
+                return str(completion["text"])
+        return str(completion)
+
+    def _score_single_grpo_output(
+        self,
+        pred_text: str,
+        gold_labels: list[str],
+        query: str,
+    ) -> float:
+        num_tokens = len(query.split())
+
+        parsed_raw = parse_bio_output(pred_text, num_tokens)
+
+        # 格式校验：必须是逗号分隔且 token 数对齐
+        raw_parts = [p.strip() for p in pred_text.replace("\n", ",").split(",") if p.strip()]
+        if len(raw_parts) != num_tokens:
+            return -1.0
+
+        valid_prefix = {"O", "B", "I"}
+        for tag in raw_parts:
+            if tag == "O":
+                continue
+            if "-" not in tag:
+                return -1.0
+            prefix, _ = tag.split("-", 1)
+            if prefix not in valid_prefix:
+                return -1.0
+
+        pred_labels = [abbrev_to_label(t) for t in parsed_raw]
+
+        o_matches = 0
+        non_o_matches = 0
+        for p, g in zip(pred_labels, gold_labels):
+            if p != g:
+                continue
+            if g == "O":
+                o_matches += 1
+            else:
+                non_o_matches += 1
+
+        score = 0.0
+        score += 0.1 * o_matches
+
+        # 非 O match 奖励：3 个及以上封顶 1.0
+        if non_o_matches == 1:
+            score += 0.5
+        elif non_o_matches == 2:
+            score += 0.8
+        elif non_o_matches >= 3:
+            score += 1.0
+        return score
+
+    def _resolve_eval_csv_path(self, split: str) -> Path:
+        """解析 evaluate 明细 CSV 输出路径。"""
+        cfg = self.config
+        if cfg.eval_csv_path:
+            return Path(cfg.eval_csv_path)
+        return Path(cfg.save_dir) / cfg.dataset_name / "trl" / f"eval_{split}.csv"
+
+    def _write_eval_csv(self, csv_path: Path, rows: list[dict[str, object]]) -> None:
+        """写出 evaluate 明细 CSV。"""
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = [
+            "input_case",
+            "expected_output",
+            "actual_output",
+            "is_case_correct",
+            "tp_entity_count",
+            "expected_entity_count",
+            "actual_entity_count",
+        ]
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)

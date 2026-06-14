@@ -1,7 +1,7 @@
 """
 ner_trainer/trl/config.py
 
-TRLTrainConfig — TRL + LoRA 后端专属训练配置。
+TRLTrainConfig — TRL 后端专属训练配置（支持 LoRA / 全量训练）。
 
 策略：将 NER 任务转换为生成式任务，使用 MiniCPM5（ChatML 模板）
 输入 query 文本，输出逗号分隔的缩写 BIO 标签序列。
@@ -51,11 +51,11 @@ TRAIN_CHAT_TEMPLATE = (
 @dataclass
 class TRLTrainConfig(BaseTrainConfig):
     """
-    TRL + LoRA 微调配置。
+    TRL 微调配置。
 
     训练流程：
     1. 将 QueryNER 转为 OpenAI messages JSONL（缩写标签）
-    2. 加载 base model + LoRA
+    2. 加载 base model（可选 LoRA）
     3. patch chat template 加入 {% generation %} 块
     4. 使用 SFTTrainer(assistant_only_loss=True) 训练
     5. 保存 LoRA adapter
@@ -90,7 +90,22 @@ class TRLTrainConfig(BaseTrainConfig):
     开启后显存需求大幅降低（约 2×），适合 24GB 及以下显卡。
     """
 
-    # ── LoRA 参数 ─────────────────────────────────────────────────
+    # ── 训练模式 ──────────────────────────────────────────────────
+    trl_mode: str = "sft"
+    """
+    TRL 训练模式：
+    - "sft": 监督微调（SFTTrainer）
+    - "grpo": 强化学习（GRPOTrainer）
+    """
+
+    full_finetune: bool = False
+    """
+    是否全量训练（不使用 LoRA）。
+    - False: LoRA/QLoRA（默认，显存占用更低）
+    - True: 全量训练（参数全部可训练，显存占用更高）
+    """
+
+    # ── LoRA 参数（仅 full_finetune=False 时生效）─────────────────
     lora_r: int = 16
     """LoRA rank。"""
 
@@ -134,6 +149,26 @@ class TRLTrainConfig(BaseTrainConfig):
 
     logging_steps: int = 10
     """每多少步输出一次 training loss。"""
+
+    # ── GRPO 专属超参 ────────────────────────────────────────────
+    grpo_num_generations: int = 4
+    """每个 prompt 采样的候选 completion 数。"""
+
+    grpo_max_prompt_length: int = 1024
+    """GRPO prompt 最大长度。"""
+
+    grpo_max_completion_length: int = 128
+    """GRPO completion 最大长度。"""
+
+    grpo_beta: float = 0.0
+    """GRPO KL 惩罚系数。"""
+
+    # ── 评估输出 ──────────────────────────────────────────────────
+    eval_csv_path: str = ""
+    """
+    evaluate() 明细 CSV 输出路径。
+    为空时自动写入: <save_dir>/<dataset_name>/trl/eval_<split>.csv
+    """
 
     # ── 生成参数（评估用）────────────────────────────────────────
     max_new_tokens: int = 128

@@ -187,7 +187,9 @@ def _build_train_config(args: argparse.Namespace):
             "base_model", "lora_r", "lora_alpha", "lora_dropout",
             "batch_size", "lr", "warmup_ratio",
             "max_length", "max_new_tokens", "temperature", "system_prompt",
-            "use_unsloth", "load_in_4bit",
+            "use_unsloth", "load_in_4bit", "full_finetune", "eval_csv_path",
+            "trl_mode", "grpo_num_generations", "grpo_max_prompt_length",
+            "grpo_max_completion_length", "grpo_beta",
         ):
             val = getattr(args, f, None)
             if val is not None:
@@ -426,11 +428,25 @@ def build_parser() -> argparse.ArgumentParser:
                          help="TRL 推理温度（0=greedy）")
     train_p.add_argument("--system_prompt", type=str, default=None,
                          help="TRL 自定义 system prompt（留空用内置）")
+    train_p.add_argument("--trl_mode", choices=["sft", "grpo"], default=None,
+                         help="TRL 训练模式：sft（默认）或 grpo")
+    train_p.add_argument("--grpo_num_generations", type=int, default=None,
+                         help="GRPO 每个 prompt 采样候选数")
+    train_p.add_argument("--grpo_max_prompt_length", type=int, default=None,
+                         help="GRPO prompt 最大长度")
+    train_p.add_argument("--grpo_max_completion_length", type=int, default=None,
+                         help="GRPO completion 最大长度")
+    train_p.add_argument("--grpo_beta", type=float, default=None,
+                         help="GRPO KL 惩罚系数")
     # TRL + unsloth 选项
     train_p.add_argument("--use_unsloth", action="store_true", default=None,
                          help="使用 unsloth 加速（FastLanguageModel），需 pip install unsloth")
     train_p.add_argument("--load_in_4bit", action="store_true", default=None,
                          help="QLoRA 4-bit 量化加载（仅 --use_unsloth 时有效）")
+    train_p.add_argument("--full_finetune", action="store_true", default=None,
+                         help="TRL 全量训练（不使用 LoRA，显存占用更高）")
+    train_p.add_argument("--eval_csv_path", type=str, default=None,
+                         help="评估明细 CSV 输出路径（默认 .model/<dataset>/trl/eval_<split>.csv）")
     train_p.add_argument("--train_split", type=str, default=None)
     train_p.add_argument("--dev_split", type=str, default=None)
     train_p.add_argument("--test_split", type=str, default=None)
@@ -472,6 +488,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="使用 unsloth 推理（FastLanguageModel）")
     val_p.add_argument("--load_in_4bit", action="store_true", default=None,
                        help="QLoRA 4-bit 量化加载（仅 --use_unsloth 时有效）")
+    val_p.add_argument("--full_finetune", action="store_true", default=None,
+                       help="加载全量模型 checkpoint（不走 LoRA adapter）")
+    val_p.add_argument("--eval_csv_path", type=str, default=None,
+                       help="评估明细 CSV 输出路径（默认 .model/<dataset>/trl/eval_<split>.csv）")
     val_p.add_argument("--threshold", type=float, default=None)
     val_p.add_argument("--wandb_project", type=str, default=None)
     val_p.add_argument("--wandb_entity", type=str, default=None)
