@@ -6,13 +6,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "wandb>=0.26.0",
+    # ── 核心底层硬编码：确保任何后端都基于正确的 CUDA 12.4 构建 ──
+    "torch",
+    "torchvision",
+    "torchaudio",
 ]
 
 # ── 后端依赖组（互斥，按需安装）─────────────────────────────────
-# 用法：
-#   uv run --group hanlp main.py ...          # HanLP + GLiNER2 后端
-#   uv run --group trl main.py ...            # TRL 后端
-#   uv run --group unsloth main.py ...        # TRL + unsloth 后端
 [dependency-groups]
 hanlp = [
     "datasets>=4.8.4",
@@ -32,11 +32,11 @@ unsloth = [
     "datasets>=3.4.1,<4.4",
     "unsloth>=2026.5",
     "transformers==4.57.3",
+    # unsloth 强烈建议显式固定其专用的 xformers 版本（配套 cu124）
+    "xformers", 
 ]
 
 [tool.uv]
-# hanlp / trl / unsloth 三个组的 transformers 版本互斥，
-# 声明为冲突使 uv 在不同 fork 中分别解析。
 default-groups = []
 conflicts = [
     [
@@ -45,3 +45,19 @@ conflicts = [
         { group = "unsloth" },
     ],
 ]
+
+# ── 最佳实践：将标准 PyPI 设为默认，将 PyTorch 设为显式匹配 ──
+# 这样普通包走普通源（极快），Torch 包由于名字匹配，会自动去 PyTorch 源抓取
+index-url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+# 强制告诉 uv：遇到下面这几个包，必须且只能去 pytorch-cu124 源里下载
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+xformers = { index = "pytorch-cu124" }
