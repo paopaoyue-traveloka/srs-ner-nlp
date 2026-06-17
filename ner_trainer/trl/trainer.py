@@ -354,6 +354,14 @@ class TRLTrainer(NERTrainer):
         from datasets import Dataset
         from peft import LoraConfig, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
+
+        # ------ compatibility shim: llm_blender uses removed TRANSFORMERS_CACHE ------
+        import transformers.utils.hub as _tfm_hub
+        if not hasattr(_tfm_hub, "TRANSFORMERS_CACHE"):
+            from huggingface_hub.constants import HF_HUB_CACHE
+            _tfm_hub.TRANSFORMERS_CACHE = HF_HUB_CACHE
+        # ------------------------------------------------------------------------------
+
         try:
             from trl import GRPOConfig, GRPOTrainer
         except Exception as exc:  # pragma: no cover - dependency/runtime guard
