@@ -24,6 +24,7 @@ trl = [
     "datasets>=4.8.4",
     "trl>=0.21",
     "peft>=0.13",
+    "mergekit>=0.1.4",
     "transformers>=5.6,<6",
     "accelerate",
     "aiohttp>=3.10",

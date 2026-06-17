@@ -354,7 +354,14 @@ class TRLTrainer(NERTrainer):
         from datasets import Dataset
         from peft import LoraConfig, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-        from trl import GRPOConfig, GRPOTrainer
+        try:
+            from trl import GRPOConfig, GRPOTrainer
+        except Exception as exc:  # pragma: no cover - dependency/runtime guard
+            raise RuntimeError(
+                "导入 GRPOTrainer 失败。请安装/同步 GRPO 依赖后重试：\n"
+                "  uv sync --group trl\n"
+                "若仍失败，请确认环境中已安装 mergekit（TRL GRPO 依赖）。"
+            ) from exc
 
         cfg = self.config
         self.dataset = self._ensure_dataset(dataset)
