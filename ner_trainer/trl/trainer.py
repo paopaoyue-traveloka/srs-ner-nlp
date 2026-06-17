@@ -473,6 +473,7 @@ class TRLTrainer(NERTrainer):
             args=GRPOConfig(
                 output_dir=str(run_dir),
                 num_train_epochs=cfg.epochs,
+                max_steps=cfg.max_steps,
                 per_device_train_batch_size=cfg.batch_size,
                 gradient_accumulation_steps=cfg.gradient_accumulation_steps,
                 learning_rate=cfg.lr,

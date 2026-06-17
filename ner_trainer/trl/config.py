@@ -166,6 +166,12 @@ class TRLTrainConfig(BaseTrainConfig):
     grpo_temperature: float = 0.5
     """GRPO 生成采样温度（默认 0.5，低于 TRL 默认的 1.0 以减少格式错误）。"""
 
+    max_steps: int = -1
+    """
+    最大训练步数（optimizer steps）。设为正数后忽略 epochs，训练到指定步数即停。
+    -1 表示不限制，按 epochs 控制。
+    """
+
     # ── 评估输出 ──────────────────────────────────────────────────
     eval_csv_path: str = ""
     """

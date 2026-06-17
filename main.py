@@ -190,6 +190,7 @@ def _build_train_config(args: argparse.Namespace):
             "use_unsloth", "load_in_4bit", "full_finetune", "eval_csv_path",
             "trl_mode", "grpo_num_generations", "grpo_max_prompt_length",
             "grpo_max_completion_length", "grpo_beta", "grpo_temperature",
+            "max_steps",
         ):
             val = getattr(args, f, None)
             if val is not None:
@@ -440,6 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="GRPO KL 惩罚系数")
     train_p.add_argument("--grpo_temperature", type=float, default=None,
                          help="GRPO 生成采样温度（默认 0.5）")
+    train_p.add_argument("--max_steps", type=int, default=None,
+                         help="最大训练步数（设置后忽略 epochs）")
     # TRL + unsloth 选项
     train_p.add_argument("--use_unsloth", action="store_true", default=None,
                          help="使用 unsloth 加速（FastLanguageModel），需 pip install unsloth")

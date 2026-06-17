@@ -30,6 +30,7 @@ uv run --group trl main.py train queryner \
     --grpo_max_prompt_length 1024 \
     --grpo_max_completion_length 128 \
     --grpo_beta 0.0 \
+    --max_steps 80 \
     --best_metric f1 \
     --early_stopping_patience 3 \
     --wandb_run trl_grpo_minicpm5_train_queryner
