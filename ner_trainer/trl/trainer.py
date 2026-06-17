@@ -450,6 +450,12 @@ class TRLTrainer(NERTrainer):
             model = get_peft_model(model, lora)
             model.print_trainable_parameters()
 
+        # TRL GRPOTrainer 会访问 model.warnings_issued，但 PeftModel 的
+        # __getattr__ 无法透传到底层模型的该属性（transformers Trainer 动态设置）。
+        # 预先设置避免 AttributeError。
+        if not hasattr(model, "warnings_issued"):
+            model.warnings_issued = {}
+
         logger.info(
             "开始 TRL GRPO 训练（model=%s, epochs=%d, batch=%d×%d, lr=%s, generations=%d）",
             cfg.base_model,
