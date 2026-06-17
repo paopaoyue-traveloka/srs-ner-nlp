@@ -27,6 +27,17 @@ TRLTrainer — NERTrainer 的 TRL + LoRA 后端实现。
 
 from __future__ import annotations
 
+# ------ compatibility shim: llm_blender uses removed TRANSFORMERS_CACHE ------
+# Must run before any TRL import (TRL -> judges -> llm_blender)
+try:
+    import transformers.utils.hub as _tfm_hub
+    if not hasattr(_tfm_hub, "TRANSFORMERS_CACHE"):
+        from huggingface_hub.constants import HF_HUB_CACHE
+        _tfm_hub.TRANSFORMERS_CACHE = HF_HUB_CACHE
+except ImportError:
+    pass  # transformers not installed yet
+# ------------------------------------------------------------------------------
+
 import csv
 import json
 import logging
@@ -355,20 +366,13 @@ class TRLTrainer(NERTrainer):
         from peft import LoraConfig, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-        # ------ compatibility shim: llm_blender uses removed TRANSFORMERS_CACHE ------
-        import transformers.utils.hub as _tfm_hub
-        if not hasattr(_tfm_hub, "TRANSFORMERS_CACHE"):
-            from huggingface_hub.constants import HF_HUB_CACHE
-            _tfm_hub.TRANSFORMERS_CACHE = HF_HUB_CACHE
-        # ------------------------------------------------------------------------------
-
         try:
             from trl import GRPOConfig, GRPOTrainer
         except Exception as exc:  # pragma: no cover - dependency/runtime guard
             raise RuntimeError(
                 "导入 GRPOTrainer 失败。请安装/同步 GRPO 依赖后重试：\n"
                 "  uv sync --group trl\n"
-                "若仍失败，请确认环境中已安装 mergekit（TRL GRPO 依赖）。"
+                "若仍失败，请确认环境中已安装 mergekit 和 llm-blender（TRL GRPO 依赖）。"
             ) from exc
 
         cfg = self.config

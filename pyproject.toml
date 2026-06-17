@@ -25,6 +25,7 @@ trl = [
     "trl>=0.21",
     "peft>=0.13",
     "mergekit>=0.1.4",
+    "llm-blender>=0.0.2",
     "transformers>=5.6,<6",
     "accelerate",
     "aiohttp>=3.10",
