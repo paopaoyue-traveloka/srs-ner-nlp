@@ -163,6 +163,9 @@ class TRLTrainConfig(BaseTrainConfig):
     grpo_beta: float = 0.0
     """GRPO KL 惩罚系数。"""
 
+    grpo_temperature: float = 0.5
+    """GRPO 生成采样温度（默认 0.5，低于 TRL 默认的 1.0 以减少格式错误）。"""
+
     # ── 评估输出 ──────────────────────────────────────────────────
     eval_csv_path: str = ""
     """

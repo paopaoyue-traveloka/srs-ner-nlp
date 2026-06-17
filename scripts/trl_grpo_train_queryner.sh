@@ -17,9 +17,9 @@ uv run --group trl main.py train queryner \
     --backend trl \
     --trl_mode grpo \
     --base_model "${BASE_MODEL:-openbmb/MiniCPM5-1B}" \
-    --epochs 2 \
-    --batch_size 2 \
-    --accumulative_counts 8 \
+    --epochs 1 \
+    --batch_size 8 \
+    --accumulative_counts 2 \
     --lr 1e-5 \
     --warmup_ratio 0.03 \
     --lora_r 16 \

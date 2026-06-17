@@ -488,6 +488,7 @@ class TRLTrainer(NERTrainer):
                 max_completion_length=cfg.grpo_max_completion_length,
                 num_generations=cfg.grpo_num_generations,
                 beta=cfg.grpo_beta,
+                temperature=cfg.grpo_temperature,
                 seed=42,
             ),
             train_dataset=ds,
