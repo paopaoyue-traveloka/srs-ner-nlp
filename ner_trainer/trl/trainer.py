@@ -8,7 +8,7 @@ TRLTrainer — NERTrainer 的 TRL + LoRA 后端实现。
 - 使用 TRL SFTTrainer + PEFT LoRA 微调
 - 标准模式：通过 patched chat template ({% generation %}) 实现 assistant_only_loss
 - unsloth 模式：使用 FastLanguageModel + dataset_text_field="text" 预格式化
-- 评估时加载 base + adapter 做推理，解析输出为 BIO 标签并计算 entity-level F1
+- 评估时加载完整 checkpoint 做推理，解析输出为 BIO 标签并计算 entity-level F1
 
 训练数据格式（OpenAI messages）：
     {"messages": [
@@ -30,6 +30,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -238,75 +239,42 @@ class TRLTrainer(NERTrainer):
 
     def load_from_checkpoint(self, ckpt_dir: Path) -> None:
         """
-        从 HF adapter 目录加载 LoRA 权重到 base model。
+        从 checkpoint 目录加载完整模型。
 
-        LoRA 模式：ckpt_dir 应包含 adapter_config.json + adapter_model.safetensors。
-        全量模式：ckpt_dir 应为可被 from_pretrained() 加载的模型目录。
+        当前训练流程只保存 merged/full checkpoint（包含 config.json）。
         """
-        cfg = self.config
-        adapter_dir = ckpt_dir
+        ckpt_dir = Path(ckpt_dir)
 
-        if not cfg.full_finetune and not (adapter_dir / "adapter_config.json").exists():
+        if not (ckpt_dir / "config.json").exists():
             raise FileNotFoundError(
-                f"adapter 目录不存在或不完整: '{adapter_dir}'\n"
-                "请确认已完成 LoRA 训练并保存了 adapter。"
+                f"模型目录不存在或不完整: '{ckpt_dir}'\n"
+                "应包含 config.json（完整模型 checkpoint）。"
             )
 
-        if cfg.full_finetune:
-            if cfg.use_unsloth:
-                self._load_full_checkpoint_unsloth(adapter_dir)
-            else:
-                self._load_full_checkpoint_standard(adapter_dir)
-            return
+        logger.info("检测到 full checkpoint: %s", ckpt_dir)
+        loader = (
+            self._load_full_checkpoint_unsloth
+            if self._use_unsloth_loader()
+            else self._load_full_checkpoint_standard
+        )
+        loader(ckpt_dir)
 
+    def _run_subdir(self) -> str:
+        """根据配置解析当前 TRL 运行目录名。"""
+        cfg = self.config
+        if cfg.trl_mode == "grpo":
+            return "trl_grpo"
         if cfg.use_unsloth:
-            self._load_checkpoint_unsloth(adapter_dir)
-        else:
-            self._load_checkpoint_standard(adapter_dir)
+            return "trl_unsloth"
+        return "trl_standard"
 
-    def _load_checkpoint_standard(self, adapter_dir: Path) -> None:
-        """标准模式：AutoModelForCausalLM + PeftModel.from_pretrained。"""
-        import torch
-        from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
+    def _use_unsloth_loader(self) -> bool:
+        """解析 checkpoint 加载时是否使用 unsloth loader。"""
         cfg = self.config
-        logger.info("加载 base model: %s", cfg.base_model)
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            cfg.base_model, trust_remote_code=True,
-        )
-        base_model = AutoModelForCausalLM.from_pretrained(
-            cfg.base_model,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
-
-        logger.info("加载 LoRA adapter: %s", adapter_dir)
-        self._model = PeftModel.from_pretrained(base_model, str(adapter_dir))
-        self._model.eval()
-        self.model = self._model
-        self._is_unsloth_loaded = False
-
-    def _load_checkpoint_unsloth(self, adapter_dir: Path) -> None:
-        """unsloth 模式：FastLanguageModel.from_pretrained(adapter_path)。"""
-        import torch
-        from unsloth import FastLanguageModel
-
-        cfg = self.config
-        logger.info(
-            "加载 adapter (unsloth, 4bit=%s): %s",
-            cfg.load_in_4bit, adapter_dir,
-        )
-        self._model, self._tokenizer = FastLanguageModel.from_pretrained(
-            model_name=str(adapter_dir),
-            max_seq_length=cfg.max_length,
-            dtype=torch.bfloat16,
-            load_in_4bit=cfg.load_in_4bit,
-        )
-        self._model.eval()
-        self.model = self._model
-        self._is_unsloth_loaded = True
+        if cfg.trl_mode == "grpo" and cfg.use_unsloth:
+            logger.warning("GRPO checkpoint 使用标准 HF loader（忽略 use_unsloth=True）")
+            return False
+        return bool(cfg.use_unsloth)
 
     def _load_full_checkpoint_standard(self, ckpt_dir: Path) -> None:
         """全量模式：从 checkpoint 目录直接加载完整模型。"""
@@ -363,7 +331,7 @@ class TRLTrainer(NERTrainer):
         3. 标准模式：patch chat template + assistant_only_loss
            unsloth 模式：pre-format text + dataset_text_field
         4. SFTTrainer 训练
-        5. 保存 adapter → best/
+        5. 保存完整 checkpoint → best/
         6. 在 test 集评估
         """
         cfg = self.config
@@ -394,7 +362,7 @@ class TRLTrainer(NERTrainer):
         if cfg.use_unsloth:
             logger.warning("GRPO 模式暂不支持 unsloth，自动回退标准 HF 路径。")
 
-        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl"
+        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl_grpo"
         best_dir = run_dir / "best"
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -445,9 +413,9 @@ class TRLTrainer(NERTrainer):
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             pct = 100.0 * trainable_params / total_params if total_params else 0.0
             logger.info(
-                "trainable params: %,d / %,d (%.2f%%)",
-                trainable_params,
-                total_params,
+                "trainable params: %s / %s (%.2f%%)",
+                f"{trainable_params:,}",
+                f"{total_params:,}",
                 pct,
             )
         else:
@@ -502,13 +470,19 @@ class TRLTrainer(NERTrainer):
 
         grpo_trainer.train()
 
+        if best_dir.exists():
+            shutil.rmtree(best_dir)
         best_dir.mkdir(parents=True, exist_ok=True)
-        grpo_trainer.model.save_pretrained(str(best_dir))
         if cfg.full_finetune:
+            grpo_trainer.model.save_pretrained(str(best_dir))
             tok.save_pretrained(str(best_dir))
             logger.info("GRPO 全量模型已保存: %s", best_dir)
         else:
-            logger.info("GRPO LoRA adapter 已保存: %s", best_dir)
+            logger.info("GRPO LoRA 训练完成，开始合并并保存独立模型: %s", best_dir)
+            merged_model = grpo_trainer.model.merge_and_unload()
+            merged_model.save_pretrained(str(best_dir), safe_serialization=True)
+            tok.save_pretrained(str(best_dir))
+            logger.info("GRPO merged 全量模型已保存: %s", best_dir)
 
         return self._post_train_eval(best_dir, wb)
 
@@ -528,7 +502,7 @@ class TRLTrainer(NERTrainer):
         self.dataset = self._ensure_dataset(dataset)
 
         # ── 1. 准备目录 ──────────────────────────────────────────
-        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl"
+        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl_standard"
         best_dir = run_dir / "best"
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -573,9 +547,9 @@ class TRLTrainer(NERTrainer):
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             pct = 100.0 * trainable_params / total_params if total_params else 0.0
             logger.info(
-                "trainable params: %,d / %,d (%.2f%%)",
-                trainable_params,
-                total_params,
+                "trainable params: %s / %s (%.2f%%)",
+                f"{trainable_params:,}",
+                f"{total_params:,}",
                 pct,
             )
         else:
@@ -626,14 +600,20 @@ class TRLTrainer(NERTrainer):
 
         sft_trainer.train()
 
-        # ── 6. 保存 checkpoint（LoRA adapter / 全量模型）──────────
+        # ── 6. 保存 checkpoint（merged LoRA / 全量模型）──────────
+        if best_dir.exists():
+            shutil.rmtree(best_dir)
         best_dir.mkdir(parents=True, exist_ok=True)
-        sft_trainer.model.save_pretrained(str(best_dir))
         if cfg.full_finetune:
+            sft_trainer.model.save_pretrained(str(best_dir))
             tok.save_pretrained(str(best_dir))
             logger.info("全量模型已保存: %s", best_dir)
         else:
-            logger.info("LoRA adapter 已保存: %s", best_dir)
+            logger.info("LoRA 训练完成，开始合并并保存独立模型: %s", best_dir)
+            merged_model = sft_trainer.model.merge_and_unload()
+            merged_model.save_pretrained(str(best_dir), safe_serialization=True)
+            tok.save_pretrained(str(best_dir))
+            logger.info("merged 全量模型已保存: %s", best_dir)
 
         # ── 7. 评估 ──────────────────────────────────────────────
         return self._post_train_eval(best_dir, wb)
@@ -654,7 +634,7 @@ class TRLTrainer(NERTrainer):
         self.dataset = self._ensure_dataset(dataset)
 
         # ── 1. 准备目录 ──────────────────────────────────────────
-        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl"
+        run_dir = Path(cfg.save_dir) / cfg.dataset_name / "trl_unsloth"
         best_dir = run_dir / "best"
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -693,9 +673,9 @@ class TRLTrainer(NERTrainer):
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             pct = 100.0 * trainable_params / total_params if total_params else 0.0
             logger.info(
-                "trainable params: %,d / %,d (%.2f%%)",
-                trainable_params,
-                total_params,
+                "trainable params: %s / %s (%.2f%%)",
+                f"{trainable_params:,}",
+                f"{total_params:,}",
                 pct,
             )
         else:
@@ -755,14 +735,20 @@ class TRLTrainer(NERTrainer):
 
         sft_trainer.train()
 
-        # ── 7. 保存 checkpoint（LoRA adapter / 全量模型）──────────
+        # ── 7. 保存 checkpoint（merged LoRA / 全量模型）──────────
+        if best_dir.exists():
+            shutil.rmtree(best_dir)
         best_dir.mkdir(parents=True, exist_ok=True)
-        sft_trainer.model.save_pretrained(str(best_dir))
         if cfg.full_finetune:
+            sft_trainer.model.save_pretrained(str(best_dir))
             tok.save_pretrained(str(best_dir))
             logger.info("全量模型已保存: %s", best_dir)
         else:
-            logger.info("LoRA adapter 已保存: %s", best_dir)
+            logger.info("LoRA 训练完成，开始合并并保存独立模型: %s", best_dir)
+            merged_model = sft_trainer.model.merge_and_unload()
+            merged_model.save_pretrained(str(best_dir), safe_serialization=True)
+            tok.save_pretrained(str(best_dir))
+            logger.info("merged 全量模型已保存: %s", best_dir)
 
         # ── 8. 评估 ──────────────────────────────────────────────
         return self._post_train_eval(best_dir, wb)
@@ -777,7 +763,7 @@ class TRLTrainer(NERTrainer):
         test_metrics: NERMetrics | None = None
 
         if cfg.test_split and cfg.test_split in self.dataset.splits():
-            logger.info("加载 adapter 进行 test 集评估...")
+            logger.info("加载 checkpoint 进行 test 集评估...")
             self.load_from_checkpoint(best_dir)
 
             test_metrics = self.evaluate(
@@ -799,10 +785,11 @@ class TRLTrainer(NERTrainer):
         dataset: NERDataset | None = None,
         model_dir: str | None = None,
     ) -> NERMetrics:
-        """独立评估：加载 adapter，在指定 split 上生成并计算指标。"""
+        """独立评估：加载 checkpoint，在指定 split 上生成并计算指标。"""
         cfg = self.config
+        run_subdir = self._run_subdir()
         resolved = Path(model_dir) if model_dir else (
-            Path(cfg.save_dir) / cfg.dataset_name / "trl" / "best"
+            Path(cfg.save_dir) / cfg.dataset_name / run_subdir / "best"
         )
         if not resolved.exists():
             raise FileNotFoundError(
@@ -878,10 +865,9 @@ class TRLTrainer(NERTrainer):
         GRPO reward 规则：
         1) 输出格式错误：-1
         2) O 标签逐 token match：每个 +0.1
-        3) 非 O 标签逐 token match：
-           - 第 1 个 +0.5
-           - 第 2 个额外 +0.3
-           - 第 3 个及以上每个额外 +0.1
+        3) 非 O 标签逐 token match（仅要求 entity type matched）：
+           - 预测 B-* 且 gold 为同类型 B-*：每个 +0.2
+           - 预测 I-* 且 gold 为同类型 I-* 或 B-*：每个 +0.1
         """
         rewards: list[float] = []
         for completion, labels, q in zip(completions, gold_labels, query):
@@ -935,25 +921,30 @@ class TRLTrainer(NERTrainer):
         pred_labels = [abbrev_to_label(t) for t in parsed_raw]
 
         o_matches = 0
-        non_o_matches = 0
+        non_o_reward = 0.0
         for p, g in zip(pred_labels, gold_labels):
-            if p != g:
-                continue
-            if g == "O":
+            if p == "O" and g == "O":
                 o_matches += 1
-            else:
-                non_o_matches += 1
+
+            if p == "O" or g == "O":
+                continue
+
+            if "-" not in p or "-" not in g:
+                continue
+
+            p_prefix, p_type = p.split("-", 1)
+            g_prefix, g_type = g.split("-", 1)
+            if p_type != g_type:
+                continue
+
+            if p_prefix == "B" and g_prefix == "B":
+                non_o_reward += 0.2
+            elif p_prefix == "I" and g_prefix in {"I", "B"}:
+                non_o_reward += 0.1
 
         score = 0.0
         score += 0.1 * o_matches
-
-        # 非 O match 奖励：3 个及以上封顶 1.0
-        if non_o_matches == 1:
-            score += 0.5
-        elif non_o_matches == 2:
-            score += 0.8
-        elif non_o_matches >= 3:
-            score += 1.0
+        score += non_o_reward
         return score
 
     def _resolve_eval_csv_path(self, split: str) -> Path:
@@ -961,7 +952,7 @@ class TRLTrainer(NERTrainer):
         cfg = self.config
         if cfg.eval_csv_path:
             return Path(cfg.eval_csv_path)
-        return Path(cfg.save_dir) / cfg.dataset_name / "trl" / f"eval_{split}.csv"
+        return Path(cfg.save_dir) / cfg.dataset_name / self._run_subdir() / f"eval_{split}.csv"
 
     def _write_eval_csv(self, csv_path: Path, rows: list[dict[str, object]]) -> None:
         """写出 evaluate 明细 CSV。"""

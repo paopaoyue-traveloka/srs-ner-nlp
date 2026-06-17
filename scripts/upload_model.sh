@@ -2,8 +2,8 @@
 # 上传模型目录到 WandB Artifacts
 #
 # 使用：
-#   bash scripts/upload_model.sh .model/queryner/trl/best
-#   bash scripts/upload_model.sh .model/queryner/trl/best --artifact_name queryner-trl-v1
+#   bash scripts/upload_model.sh .model/queryner/trl_standard/best
+#   bash scripts/upload_model.sh .model/queryner/trl_standard/best --artifact_name queryner-trl-v1
 #
 # 环境变量（可选）：
 #   WANDB_PROJECT=ner-finetune     WandB 项目名

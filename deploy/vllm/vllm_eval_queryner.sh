@@ -2,13 +2,13 @@
 # 评估 vLLM 服务上的模型（可用于 BF16/FP8 对比）
 #
 # 用法：
-#   MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/vllm_eval_queryner.sh
+#   MODEL_NAME=.model/queryner/trl_standard/best bash deploy/vllm/vllm_eval_queryner.sh
 
 set -euo pipefail
 
 if [ -z "${MODEL_NAME:-}" ]; then
     echo "错误: 请设置 MODEL_NAME"
-    echo "示例: MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/vllm_eval_queryner.sh"
+  echo "示例: MODEL_NAME=.model/queryner/trl_standard/best bash deploy/vllm/vllm_eval_queryner.sh"
     exit 1
 fi
 

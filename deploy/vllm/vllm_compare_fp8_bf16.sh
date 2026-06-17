@@ -10,7 +10,7 @@ set -euo pipefail
 
 if [ -z "${MODEL_PATH:-}" ]; then
   echo "错误: 请设置 MODEL_PATH"
-  echo "示例: MODEL_PATH=.model/queryner/trl/best MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/vllm_compare_fp8_bf16.sh"
+  echo "示例: MODEL_PATH=.model/queryner/trl_standard/best MODEL_NAME=.model/queryner/trl_standard/best bash deploy/vllm/vllm_compare_fp8_bf16.sh"
   exit 1
 fi
 

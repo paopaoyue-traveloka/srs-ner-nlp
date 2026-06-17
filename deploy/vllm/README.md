@@ -5,7 +5,7 @@
 ## 1) 启动服务（针对 20 in / 20 out 轻量请求优化）
 
 ```bash
-MODEL_PATH=.model/queryner/trl/best bash deploy/vllm/serve.sh
+MODEL_PATH=.model/queryner/trl_standard/best bash deploy/vllm/serve.sh
 ```
 
 默认优化：
@@ -18,7 +18,7 @@ MODEL_PATH=.model/queryner/trl/best bash deploy/vllm/serve.sh
 ### FP8 原生量化部署（vLLM）
 
 ```bash
-MODEL_PATH=.model/queryner/trl/best bash deploy/vllm/vllm_serve_fp8_queryner.sh
+MODEL_PATH=.model/queryner/trl_standard/best bash deploy/vllm/vllm_serve_fp8_queryner.sh
 ```
 
 默认会设置：
@@ -30,7 +30,7 @@ MODEL_PATH=.model/queryner/trl/best bash deploy/vllm/vllm_serve_fp8_queryner.sh
 ## 2) 固定 QPS Benchmark（采样 QueryNER）
 
 ```bash
-MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/benchmark.sh
+MODEL_NAME=.model/queryner/trl_standard/best bash deploy/vllm/benchmark.sh
 ```
 
 主要记录：完整返回端到端延迟（从请求发起到完整响应返回）。
@@ -45,7 +45,7 @@ MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/benchmark.sh
 ## 3) Evaluate（接入已有评估字段）
 
 ```bash
-MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/vllm_eval_queryner.sh
+MODEL_NAME=.model/queryner/trl_standard/best bash deploy/vllm/vllm_eval_queryner.sh
 ```
 
 输出 CSV 字段与项目 evaluate 明细一致：
@@ -66,9 +66,13 @@ MODEL_NAME=.model/queryner/trl/best bash deploy/vllm/vllm_eval_queryner.sh
 ## 4) 一键 FP8 vs BF16 对比
 
 ```bash
-MODEL_PATH=.model/queryner/trl/best MODEL_NAME=.model/queryner/trl/best \
+MODEL_PATH=.model/queryner/trl_standard/best MODEL_NAME=.model/queryner/trl_standard/best \
 bash deploy/vllm/vllm_compare_fp8_bf16.sh
 ```
+
+若使用其他训练模式，可替换为对应目录：
+- `trl_unsloth/best`
+- `trl_grpo/best`
 
 会自动：
 1. 启 BF16 服务，跑 evaluate + benchmark

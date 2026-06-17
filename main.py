@@ -11,10 +11,10 @@ CLI 入口 — NER 数据集探索 & 微调工具
     uv run main.py train queryner --backend trl --base_model openbmb/MiniCPM5-1B
 
     uv run main.py validate queryner --backend trl --split test
-    uv run main.py validate queryner --split test --model_dir .model/queryner/trl/best
+    uv run main.py validate queryner --split test --model_dir .model/queryner/trl_standard/best
 
-    uv run main.py upload-model .model/queryner/trl/best
-    uv run main.py upload-model .model/queryner/trl/best --artifact_name my-ner-model
+    uv run main.py upload-model .model/queryner/trl_standard/best
+    uv run main.py upload-model .model/queryner/trl_standard/best --artifact_name my-ner-model
 """
 
 from __future__ import annotations
@@ -477,7 +477,12 @@ def build_parser() -> argparse.ArgumentParser:
     val_p.add_argument("dataset", help="数据集名称，如 queryner")
     val_p.add_argument("--backend", choices=["hanlp", "gliner2", "trl"], default="hanlp")
     val_p.add_argument("--split", type=str, default="test")
-    val_p.add_argument("--model_dir", type=str, default=None, help="模型路径（默认 .model/<dataset>/best）")
+    val_p.add_argument(
+        "--model_dir",
+        type=str,
+        default=None,
+        help="模型路径（TRL 默认 .model/<dataset>/trl_standard|trl_unsloth|trl_grpo/best）",
+    )
     val_p.add_argument("--data_dir", type=str, default=None)
     val_p.add_argument("--save_dir", type=str, default=None)
     val_p.add_argument("--pretrained_model", type=str, default=None,
@@ -501,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # upload-model
     up_p = sub.add_parser("upload-model", help="将模型目录上传到 WandB Artifacts")
-    up_p.add_argument("model_dir", help="模型目录路径（如 .model/queryner/trl/best）")
+    up_p.add_argument("model_dir", help="模型目录路径（如 .model/queryner/trl_standard/best）")
     up_p.add_argument("--artifact_name", type=str, default=None,
                        help="WandB Artifact 名称（默认使用目录名）")
     up_p.add_argument("--wandb_project", type=str, default=None)

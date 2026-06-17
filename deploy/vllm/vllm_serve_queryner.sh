@@ -18,7 +18,7 @@
 set -euo pipefail
 
 if [ -z "${MODEL_PATH:-}" ]; then
-    echo "错误: 请设置 MODEL_PATH，例如: MODEL_PATH=.model/queryner/trl/best"
+  echo "错误: 请设置 MODEL_PATH，例如: MODEL_PATH=.model/queryner/trl_standard/best"
     exit 1
 fi
 

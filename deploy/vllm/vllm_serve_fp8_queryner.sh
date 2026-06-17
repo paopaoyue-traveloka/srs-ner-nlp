@@ -2,7 +2,7 @@
 # vLLM 原生 FP8 部署（QueryNER 场景）
 #
 # 用法：
-#   MODEL_PATH=.model/queryner/trl/best bash deploy/vllm/vllm_serve_fp8_queryner.sh
+#   MODEL_PATH=.model/queryner/trl_standard/best bash deploy/vllm/vllm_serve_fp8_queryner.sh
 #
 # 可选环境变量：
 #   QUANTIZATION=fp8

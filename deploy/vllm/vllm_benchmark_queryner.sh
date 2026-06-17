@@ -2,7 +2,7 @@
 # QueryNER 采样请求压测 vLLM（固定 QPS，记录完整返回 E2E 延迟）
 #
 # 用法：
-#   MODEL_NAME=.model/queryner/trl/best bash scripts/vllm_benchmark_queryner.sh
+#   MODEL_NAME=.model/queryner/trl_standard/best bash scripts/vllm_benchmark_queryner.sh
 #
 # 可选环境变量：
 #   ENDPOINT=http://127.0.0.1:8000
@@ -18,7 +18,7 @@ set -euo pipefail
 
 if [ -z "${MODEL_NAME:-}" ]; then
     echo "错误: 请设置 MODEL_NAME（vLLM /v1/chat/completions 的 model 字段）"
-    echo "示例: MODEL_NAME=.model/queryner/trl/best bash scripts/vllm_benchmark_queryner.sh"
+  echo "示例: MODEL_NAME=.model/queryner/trl_standard/best bash scripts/vllm_benchmark_queryner.sh"
     exit 1
 fi
 
