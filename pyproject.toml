@@ -29,6 +29,7 @@ trl = [
     "transformers>=5.6,<6",
     "accelerate",
     "aiohttp>=3.10",
+    "weave>=0.51",
 ]
 unsloth = [
     "datasets>=3.4.1,<4.4",
