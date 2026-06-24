@@ -18,7 +18,7 @@ uv run --group trl main.py train queryner \
     --trl_mode grpo \
     --base_model "${BASE_MODEL:-openbmb/MiniCPM5-1B}" \
     --epochs 1 \
-    --batch_size 8 \
+    --batch_size 4 \
     --accumulative_counts 2 \
     --lr 1e-5 \
     --warmup_ratio 0.03 \
@@ -26,7 +26,7 @@ uv run --group trl main.py train queryner \
     --lora_alpha 32 \
     --lora_dropout 0.05 \
     --max_length 2048 \
-    --grpo_num_generations 4 \
+    --grpo_num_generations 8 \
     --grpo_max_prompt_length 1024 \
     --grpo_max_completion_length 128 \
     --grpo_beta 0.0 \
